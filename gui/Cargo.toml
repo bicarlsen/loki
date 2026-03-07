@@ -1,0 +1,28 @@
+[package]
+name = "loki"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+approx.workspace = true
+derive_more = { workspace = true, features = ["from", "debug"] }
+iced = { version = "0.14.0", features = ["advanced", "tokio"] }
+iced_aw = { version = "0.13.0", default-features = false, features = ["menu"] }
+rfd = "0.17.2"
+jpk_reader = { path = "../../jpk_reader/rs" }
+polars.workspace = true
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+iced_aksel = "0.2.0"
+tokio = "1.49.0"
+itertools.workspace = true
+analysis.workspace = true
+palette = "0.7.6"
+
+[build-dependencies]
+# iced_fontello = "0.14.1"
+iced_fontello = { path = "../../../iced_fontello" }
+
+[features]
+default = ["tracing"]
+tracing = ["dep:tracing", "dep:tracing-subscriber", "jpk_reader/tracing"]

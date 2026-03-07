@@ -1,0 +1,12 @@
+[package]
+name = "analysis"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+approx.workspace = true
+argmin = { version = "0.11.0", features = ["rayon"] }
+argmin-math = { version = "0.5.1", features = ["nalgebra_latest"] }
+derive_more = { workspace = true, features = ["from"] }
+nalgebra = "0.34"
+polars.workspace = true
