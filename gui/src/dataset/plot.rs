@@ -101,6 +101,7 @@ pub enum Message {
         axis: YAxisId,
         message: trace::GroupMessage,
     },
+    DataframeChange(pl::DataFrame),
 }
 
 pub struct Options {
@@ -180,6 +181,10 @@ impl State {
             Message::SetTitle(_) => todo!(),
             Message::UpdateXAxisValues(value) => self.update_x_axis_values(value),
             Message::UpdateTraceGroup { axis, message } => self.update_trace_group(axis, message),
+            Message::DataframeChange(dataframe) => {
+                self.df = dataframe;
+                iced::Task::none()
+            }
         }
     }
 

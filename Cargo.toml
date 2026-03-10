@@ -5,15 +5,11 @@ members = ["gui", "analysis"]
 default-members = ["gui"]
 
 [workspace.dependencies]
-gui = { path = "gui" }
 analysis = { path = "analysis" }
 
 approx = "0.5.1"
 derive_more = "2.0"
 itertools = "0.14.0"
 polars = "0.52.0"
-rayon = "1.10.0"
 tracing-subscriber = "0.3"
 tracing = "0.1"
-tracing-test = "0.2"
-zip = "8.1"

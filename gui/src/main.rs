@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod data_server;
 mod dataset;
 mod icon;
 mod workspace;
@@ -32,6 +33,8 @@ enum Message {
         id: PathBuf,
         message: dataset::Message,
     },
+    DataServer(data_server::Message),
+    DataServerUpdate(data_server::Update),
     /// A new window opened.
     WindowOpened {
         window: iced::window::Id,
@@ -71,22 +74,18 @@ enum WindowKind {
     },
 }
 
+#[derive(Debug)]
+struct DataServer {
+    update_tx: tokio::sync::mpsc::UnboundedSender<data_server::Update>,
+    kill: tokio::sync::oneshot::Sender<data_server::Kill>,
+}
+
 struct App {
     theme: iced::Theme,
     workspace: workspace::Workspace,
     datasets: HashMap<PathBuf, dataset::Dataset>,
     windows: HashMap<iced::window::Id, WindowKind>,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            theme: iced::Theme::CatppuccinFrappe,
-            workspace: Default::default(),
-            datasets: Default::default(),
-            windows: Default::default(),
-        }
-    }
+    data_server: Option<DataServer>,
 }
 
 impl App {
@@ -97,10 +96,17 @@ impl App {
 
 impl App {
     fn new() -> (Self, iced::Task<Message>) {
-        let (workspace, open) = workspace::Workspace::new();
+        let app = Self {
+            theme: iced::Theme::CatppuccinFrappe,
+            workspace: Default::default(),
+            datasets: Default::default(),
+            windows: Default::default(),
+            data_server: Default::default(),
+        };
 
+        let (workspace, open) = workspace::Workspace::new();
         (
-            Self::default(),
+            app,
             open.map(|message| match message {
                 workspace::Message::WorkspaceOpened(id) => Message::WindowOpened {
                     window: id,
@@ -119,6 +125,8 @@ impl App {
             Message::AppClosed => self.app_closed(),
             Message::Workspace(message) => self.workspace_message(message),
             Message::Dataset { id, message } => self.dataset_message(id, message),
+            Message::DataServer(message) => self.data_server(message),
+            Message::DataServerUpdate(update) => self.data_server_update(update),
             Message::WindowOpened { window, kind } => self.window_opened(window, kind),
             Message::WindowClosed(id) => self.window_closed(id),
             Message::OpenDatasetFilePath(path) => self.open_dataset_file_path(path),
@@ -139,6 +147,30 @@ impl App {
         }
     }
 
+    pub fn view(&self, window: window::Id) -> iced::Element<'_, Message> {
+        match self.windows.get(&window) {
+            Some(WindowKind::Workspace) => self.workspace.view().map(Message::Workspace),
+            Some(WindowKind::Dataset(path))
+            | Some(WindowKind::DatasetChild { dataset: path, .. }) => {
+                let dataset = self.datasets.get(path).expect("dataset should exist");
+                dataset.view(&window).map(move |msg| Message::Dataset {
+                    id: path.clone(),
+                    message: msg,
+                })
+            }
+            None => iced::widget::container(iced::widget::Space::new()).into(),
+        }
+    }
+
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        iced::Subscription::batch([
+            iced::window::close_events().map(Message::WindowClosed),
+            iced::Subscription::run(data_server::start).map(Message::DataServer),
+        ])
+    }
+}
+
+impl App {
     fn workspace_message(&mut self, message: workspace::Message) -> iced::Task<Message> {
         match message {
             workspace::Message::DatasetFilePathSelected(path) => {
@@ -180,6 +212,28 @@ impl App {
                         .into(),
                     )
                 }
+                dataset::Message::Pipeline(dataset::pipeline::Message::TransformPushed(
+                    ref transform,
+                )) => {
+                    if let dataset::pipeline::TransformKind::Script { file, .. } = transform.kind()
+                    {
+                        if let Some(data_server) = &self.data_server {
+                            data_server
+                                .update_tx
+                                .send(data_server::Update::TransformAdded(
+                                    data_server::TransformUri::new(id.clone(), transform.id()),
+                                ))
+                                .expect("could not send update");
+                        }
+                    }
+
+                    dataset
+                        .update(message)
+                        .map(move |message| Message::Dataset {
+                            id: id.clone(),
+                            message,
+                        })
+                }
                 _ => dataset
                     .update(message)
                     .map(move |message| Message::Dataset {
@@ -190,27 +244,53 @@ impl App {
             .expect("dataset should exist")
     }
 
-    pub fn view(&self, window: window::Id) -> iced::Element<'_, Message> {
-        match self.windows.get(&window) {
-            Some(WindowKind::Workspace) => self.workspace.view().map(Message::Workspace),
-            Some(WindowKind::Dataset(path))
-            | Some(WindowKind::DatasetChild { dataset: path, .. }) => {
-                let dataset = self.datasets.get(path).expect("dataset should exist");
-                dataset.view(&window).map(move |msg| Message::Dataset {
-                    id: path.clone(),
-                    message: msg,
+    fn data_server(&mut self, message: data_server::Message) -> iced::Task<Message> {
+        match message {
+            data_server::Message::ServerStarted(data_server) => {
+                assert!(self.data_server.is_none(), "data server already exists");
+                let mut data_server = data_server
+                    .lock()
+                    .expect("could not lock data server start message");
+                let data_server = data_server.take().expect("data server shoudl exist");
+                let _ = self.data_server.insert(data_server);
+                iced::Task::none()
+            }
+            data_server::Message::DataRequest { transform, tx } => {
+                let data_server::TransformUri { dataset, transform } = transform;
+                iced::Task::done(Message::Dataset {
+                    id: dataset,
+                    message: dataset::pipeline::Message::IpcDataframeRequest { transform, tx }
+                        .into(),
                 })
             }
-            None => iced::widget::container(iced::widget::Space::new()).into(),
+            data_server::Message::DataProduced {
+                transform,
+                dataframe,
+            } => {
+                let data_server::TransformUri { dataset, transform } = transform;
+                iced::Task::done(Message::Dataset {
+                    id: dataset,
+                    message: dataset::pipeline::Message::IpcDataframeProdcued {
+                        transform,
+                        dataframe,
+                    }
+                    .into(),
+                })
+            }
         }
     }
 
-    pub fn subscription(&self) -> iced::Subscription<Message> {
-        iced::window::close_events().map(Message::WindowClosed)
-    }
-}
+    fn data_server_update(&mut self, update: data_server::Update) -> iced::Task<Message> {
+        if let Some(data_server) = &mut self.data_server {
+            data_server
+                .update_tx
+                .send(update)
+                .expect("could not send data server update");
+        }
 
-impl App {
+        iced::Task::none()
+    }
+
     fn window_opened(&mut self, id: iced::window::Id, kind: WindowKind) -> iced::Task<Message> {
         let focus = iced::window::gain_focus(id);
         let task = match &kind {
@@ -292,6 +372,12 @@ impl App {
     }
 
     fn app_closed(&mut self) -> iced::Task<Message> {
+        // TODO: Kill data server
+        // self.data_server
+        //     .kill
+        //     .send(data_server::Kill)
+        //     .expect("kill message sent");
+
         iced::exit()
     }
 

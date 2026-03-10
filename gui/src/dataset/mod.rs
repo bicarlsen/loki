@@ -1,4 +1,4 @@
-use iced::{Task, widget::container};
+use iced::widget;
 use jpk_reader as jpk;
 use polars::prelude as pl;
 use std::{borrow::Cow, path::PathBuf};
@@ -23,7 +23,7 @@ pub enum ChildWindowType {
 }
 
 impl<'a> iced::advanced::text::IntoFragment<'a> for ChildWindowType {
-    fn into_fragment(self) -> iced::widget::text::Fragment<'a> {
+    fn into_fragment(self) -> widget::text::Fragment<'a> {
         match self {
             ChildWindowType::DataTable => Cow::Borrowed("Data table"),
             ChildWindowType::Pipeline => Cow::Borrowed("Pipeline"),
@@ -92,7 +92,7 @@ impl PlotOptions for DatasetState {
 #[derive(Default)]
 struct Children {
     data_table: Option<(iced::window::Id, data_table::DataTable)>,
-    pipeline: Option<(iced::window::Id, pipeline::Pipeline)>,
+    pipeline: Option<iced::window::Id>,
     files_browser: Option<(iced::window::Id, ())>,
 }
 
@@ -181,10 +181,10 @@ impl Dataset {
             Message::DataTableClosed => {
                 assert!(self.children.data_table.is_some());
                 let _ = self.children.data_table.take();
-                Task::none()
+                iced::Task::none()
             }
             Message::OpenPipeline => {
-                if let Some((id, _)) = self.children.pipeline {
+                if let Some(id) = self.children.pipeline {
                     iced::window::gain_focus(id.clone())
                 } else {
                     let (_, open) = iced::window::open(iced::window::Settings::default());
@@ -193,10 +193,7 @@ impl Dataset {
             }
             Message::PipelineOpened(id) => {
                 assert!(self.children.pipeline.is_none(), "pipeline already exists");
-                let _ = self
-                    .children
-                    .pipeline
-                    .insert((id.clone(), self.pipeline.clone()));
+                let _ = self.children.pipeline.insert(id.clone());
 
                 iced::Task::batch([
                     iced::Task::done(Message::WindowOpened(id.clone())),
@@ -209,7 +206,7 @@ impl Dataset {
             Message::PipelineClosed => {
                 assert!(self.children.pipeline.is_some());
                 let _ = self.children.pipeline.take();
-                Task::none()
+                iced::Task::none()
             }
             Message::OpenFilesBrowser => {
                 todo!()
@@ -218,25 +215,17 @@ impl Dataset {
             Message::FilesBrowserClosed => {
                 assert!(self.children.files_browser.is_some());
                 let _ = self.children.files_browser.take();
-                Task::none()
+                iced::Task::none()
             }
             Message::Plot(message) => self.plot.update(message).map(Into::into),
             Message::DataTable(message) => {
-                let (_, data_table) = self
-                    .children
-                    .data_table
-                    .as_mut()
-                    .expect("data table should exist");
-                data_table.update(message).map(Message::DataTable)
+                if let Some((_, data_table)) = self.children.data_table.as_mut() {
+                    data_table.update(message).map(Message::DataTable)
+                } else {
+                    iced::Task::none()
+                }
             }
-            Message::Pipeline(message) => {
-                let (_, pipeline) = self
-                    .children
-                    .pipeline
-                    .as_mut()
-                    .expect("pipeline should exist");
-                pipeline.update(message).map(Message::Pipeline)
-            }
+            Message::Pipeline(message) => self.pipeline_update(message),
             Message::VoltageSpectroscopy(message) => {
                 let DatasetState::VoltageSpectroscopy(state) = &mut self.state else {
                     panic!("invalid message state")
@@ -256,31 +245,30 @@ impl Dataset {
 
     pub fn view(&self, window: &iced::window::Id) -> iced::Element<'_, Message> {
         if self.window_id == *window {
-            let plot_container = iced::widget::container(self.plot.view().map(Message::Plot));
+            let plot_container = widget::container(self.plot.view().map(Message::Plot));
 
-            let btn_open_data_table =
-                iced::widget::button("Data table").on_press(Message::OpenDataTable);
+            let btn_open_data_table = widget::button("Data table").on_press(Message::OpenDataTable);
 
-            let btn_pipeline = iced::widget::button("Pipeline").on_press(Message::OpenPipeline);
+            let btn_pipeline = widget::button("Pipeline").on_press(Message::OpenPipeline);
 
-            let btn_file_browser = self.state.is_file_collection().then_some(
-                iced::widget::button("Files browser").on_press(Message::OpenFilesBrowser),
-            );
+            let btn_file_browser = self
+                .state
+                .is_file_collection()
+                .then_some(widget::button("Files browser").on_press(Message::OpenFilesBrowser));
 
-            let controls =
-                iced::widget::column![btn_open_data_table, btn_pipeline, btn_file_browser,];
+            let controls = widget::column![btn_open_data_table, btn_pipeline, btn_file_browser,];
 
-            let controls_container = container(controls);
-            return iced::widget::row![plot_container, controls_container].into();
+            let controls_container = widget::container(controls);
+            return widget::row![plot_container, controls_container].into();
         }
         if let Some((id, data_table)) = &self.children.data_table {
             if id == window {
                 return data_table.view().map(Message::DataTable);
             }
         }
-        if let Some((id, pipeline)) = &self.children.pipeline {
+        if let Some(id) = &self.children.pipeline {
             if id == window {
-                return pipeline.view().map(Message::Pipeline);
+                return self.pipeline.view(&self.path).map(Message::Pipeline);
             }
         }
         if let Some((id, files_browser)) = &self.children.files_browser {
@@ -293,10 +281,31 @@ impl Dataset {
     }
 }
 
+impl Dataset {
+    fn pipeline_update(&mut self, message: pipeline::Message) -> iced::Task<Message> {
+        match message {
+            pipeline::Message::OutputUpdated => iced::Task::batch([
+                self.pipeline.update(message).map(Message::Pipeline),
+                iced::Task::done(
+                    data_table::Message::DataframeUpdated(self.pipeline.output().clone()).into(),
+                ),
+                iced::Task::done(
+                    plot::Message::DataframeChange(self.pipeline.output().clone()).into(),
+                ),
+            ]),
+            _ => self.pipeline.update(message).map(Message::Pipeline),
+        }
+    }
+}
+
 mod data_table {
+    use iced::widget;
     use polars::prelude as pl;
 
-    pub type Message = ();
+    #[derive(Debug, Clone)]
+    pub enum Message {
+        DataframeUpdated(pl::DataFrame),
+    }
 
     pub struct DataTable {
         df: pl::DataFrame,
@@ -308,16 +317,21 @@ mod data_table {
         }
 
         pub fn update(&mut self, message: Message) -> iced::Task<Message> {
-            iced::Task::none()
+            match message {
+                Message::DataframeUpdated(dataframe) => {
+                    self.df = dataframe;
+                    iced::Task::none()
+                }
+            }
         }
 
         pub fn view(&self) -> iced::Element<'_, Message> {
-            use iced::widget::text;
+            use widget::text;
 
             // TODO: Headers should be sticky
             // TODO: Columns fit to data instead of header title causing overflow
             let columns = self.df.schema().iter().map(|(name, _dtype)| {
-                iced::widget::table::column(name.as_str(), |idx: usize| {
+                widget::table::column(name.as_str(), |idx: usize| {
                     let col = self.df.column(name.as_str()).unwrap();
                     match col.get(idx).unwrap() {
                         pl::AnyValue::Null => text(""),
@@ -336,113 +350,265 @@ mod data_table {
                 })
             });
 
-            let table = iced::widget::table::Table::new(columns, 0..self.df.height());
-            iced::widget::scrollable(table).into()
+            let table = widget::table::Table::new(columns, 0..self.df.height());
+            widget::scrollable(table).into()
         }
     }
 }
 
-mod pipeline {
+pub mod pipeline {
+    use iced::widget;
     use polars::prelude as pl;
-    use std::{borrow::Cow, path::PathBuf};
+    use polars_io::SerWriter;
+    use std::{
+        borrow::Cow,
+        collections::HashMap,
+        path::{Path, PathBuf},
+    };
 
     #[derive(Clone, Debug)]
     pub enum Message {
-        TransformPushed,
+        TransformPushed(Transform),
         PromptTransformScript,
         PushTransformScript(PathBuf),
+        TransformOutputUpdated(TransformId),
+        OutputUpdated,
+        IpcDataframeRequest {
+            transform: TransformId,
+            tx: crate::data_server::DataRequestTx,
+        },
+        IpcDataframeProdcued {
+            transform: TransformId,
+            dataframe: pl::DataFrame,
+        },
     }
 
-    #[derive(Clone)]
-    pub enum DataTransform {
+    pub type TransformId = u8;
+
+    #[derive(Clone, Debug)]
+    pub struct Transform {
+        id: TransformId,
+        kind: TransformKind,
+    }
+
+    impl Transform {
+        pub fn id(&self) -> TransformId {
+            self.id
+        }
+
+        pub fn kind(&self) -> &TransformKind {
+            &self.kind
+        }
+    }
+
+    impl<'a> iced::advanced::text::IntoFragment<'a> for &'a Transform {
+        fn into_fragment(self) -> widget::text::Fragment<'a> {
+            self.kind.into_fragment()
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum TransformKind {
         Script {
             file: PathBuf,
             runner: TransformScriptRunner,
         },
     }
 
-    impl<'a> iced::advanced::text::IntoFragment<'a> for &'a DataTransform {
-        fn into_fragment(self) -> iced::widget::text::Fragment<'a> {
+    impl<'a> iced::advanced::text::IntoFragment<'a> for &'a TransformKind {
+        fn into_fragment(self) -> widget::text::Fragment<'a> {
             match self {
-                DataTransform::Script { file, runner: _ } => {
-                    Cow::Owned(format!("Script ({file:?})"))
-                }
+                TransformKind::Script { file, runner: _ } => Cow::Owned(format!(
+                    "Script ({})",
+                    file.file_name()
+                        .expect("file name should exist")
+                        .to_string_lossy()
+                )),
             }
         }
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub struct TransformScriptRunner {
         cmd: String,
     }
 
     #[derive(Clone)]
-    pub struct Pipeline {
+    pub(super) struct Pipeline {
         /// Original dataframe.
         raw: pl::DataFrame,
-        /// Output of `raw` through `transforms`.
+        /// Output of `raw` after being passed through `transforms`.
         output: pl::DataFrame,
-        transforms: Vec<DataTransform>,
+        transforms: Vec<Transform>,
+        cache: HashMap<TransformId, pl::DataFrame>,
     }
 
     impl Pipeline {
-        pub fn new(df: pl::DataFrame) -> Self {
+        pub(super) fn new(df: pl::DataFrame) -> Self {
             Self {
                 raw: df.clone(),
                 output: df.clone(),
-                transforms: vec![],
+                transforms: Default::default(),
+                cache: Default::default(),
             }
         }
 
-        pub fn output(&self) -> &pl::DataFrame {
+        pub(super) fn output(&self) -> &pl::DataFrame {
             &self.output
+        }
+
+        fn push(&mut self, transform: TransformKind) -> TransformId {
+            let id = if let Some(id) = self.transforms.iter().map(|transform| transform.id).max() {
+                id + 1
+            } else {
+                0
+            };
+
+            let transform = Transform {
+                id,
+                kind: transform,
+            };
+
+            self.transforms.push(transform);
+            id
+        }
+
+        fn get_transform(&self, id: TransformId) -> Option<&Transform> {
+            self.transforms.iter().find(|transform| transform.id == id)
         }
     }
 
     impl Pipeline {
-        pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+        pub(super) fn update(&mut self, message: Message) -> iced::Task<Message> {
             match message {
-                Message::TransformPushed => iced::Task::none(),
+                Message::TransformPushed(_) => iced::Task::none(),
                 Message::PromptTransformScript => self.prompt_new_transform_script(),
                 Message::PushTransformScript(path) => {
-                    self.transforms.push(DataTransform::Script {
+                    let id = self.push(TransformKind::Script {
                         file: path,
                         runner: TransformScriptRunner {
                             cmd: "python".to_string(),
                         },
                     });
-                    iced::Task::done(Message::TransformPushed)
+
+                    let transform = self.get_transform(id).unwrap();
+                    iced::Task::done(Message::TransformPushed(transform.clone()))
                 }
+                Message::TransformOutputUpdated(transform) => {
+                    self.transform_output_updated(transform)
+                }
+                Message::OutputUpdated => iced::Task::none(),
+                Message::IpcDataframeRequest { transform, tx } => {
+                    self.ipc_dataframe_request(transform, tx)
+                }
+                Message::IpcDataframeProdcued {
+                    transform,
+                    dataframe,
+                } => self.ipc_dataframe_produced(transform, dataframe),
             }
         }
 
-        pub fn view(&self) -> iced::Element<'_, Message> {
+        pub(super) fn view(&self, dataset: impl AsRef<Path>) -> iced::Element<'_, Message> {
             let btn_ctrl_add_script =
-                iced::widget::button("Script").on_press(Message::PromptTransformScript);
-            let controls_r1 = iced::widget::row![btn_ctrl_add_script];
-            let controls = iced::widget::column![controls_r1];
+                widget::button("Script").on_press(Message::PromptTransformScript);
+            let controls_r1 = widget::row![btn_ctrl_add_script];
+            let controls = widget::column![controls_r1];
 
-            let stages = std::iter::once(iced::widget::text("raw").into())
-                .chain(
-                    self.transforms
-                        .iter()
-                        .map(|transform| iced::widget::text(transform).into()),
-                )
+            let stages = std::iter::once(widget::text("raw").into())
+                .chain(self.transforms.iter().map(|transform| {
+                    widget::tooltip(
+                        widget::text(transform),
+                        widget::text(crate::data_server::TransformUri::key_of(
+                            &dataset,
+                            transform.id,
+                        )),
+                        widget::tooltip::Position::Right,
+                    )
+                    .delay(std::time::Duration::from_millis(300))
+                    .into()
+                }))
                 .collect::<Vec<iced::Element<'_, Message>>>();
-            let pipeline = iced::widget::column(stages);
+            let pipeline = widget::column(stages);
 
-            iced::widget::column![controls, pipeline].into()
+            widget::column![controls, pipeline].into()
         }
     }
 
     impl Pipeline {
         fn prompt_new_transform_script(&mut self) -> iced::Task<Message> {
             rfd::FileDialog::new()
-                .set_title("Open dataset file")
+                .set_title("Select script file")
                 .add_filter("Python", &["py"])
                 .pick_file()
                 .map(|path| iced::Task::done(Message::PushTransformScript(path)))
                 .unwrap_or(iced::Task::none())
+        }
+
+        fn transform_output_updated(&mut self, transform: TransformId) -> iced::Task<Message> {
+            let transform_idx = self
+                .transforms
+                .iter()
+                .position(|t| t.id == transform)
+                .expect("invalid transorm id");
+            let next_idx = transform_idx + 1;
+            if next_idx == self.transforms.len() {
+                self.output = self
+                    .cache
+                    .get(&transform)
+                    .expect("dataframe should be cached")
+                    .clone();
+
+                return iced::Task::done(Message::OutputUpdated);
+            }
+
+            let next = &self.transforms[next_idx];
+            todo!("recompute");
+            iced::Task::done(Message::TransformOutputUpdated(next.id))
+        }
+
+        fn ipc_dataframe_request(
+            &mut self,
+            transform: TransformId,
+            tx: crate::data_server::DataRequestTx,
+        ) -> iced::Task<Message> {
+            let mut tx = tx.lock().expect("could not get ipc response channel");
+            let tx = tx.take().expect("ipc response channel already taken");
+
+            // TODO: Get dataframe from transofrm instead of current output.
+            // let transform = self.get_transform(transform).unwrap();
+
+            let mut ipc_file = match tempfile::NamedTempFile::new() {
+                Ok(file) => file,
+                Err(err) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("could not create ipc file: {err:?}");
+
+                    tx.send(Err(err.into()))
+                        .expect("could not send ipc response");
+                    return iced::Task::none();
+                }
+            };
+            let mut writer = pl::IpcWriter::new(ipc_file.as_file_mut());
+            if let Err(err) = writer.finish(&mut self.output) {
+                #[cfg(feature = "tracing")]
+                tracing::error!("could not write dataframe to ipc file: {err:?}");
+
+                tx.send(Err(err.into()))
+                    .expect("could not send ipc response");
+                return iced::Task::none();
+            }
+
+            tx.send(Ok(ipc_file)).expect("could not send ipc response");
+            iced::Task::none()
+        }
+
+        fn ipc_dataframe_produced(
+            &mut self,
+            transform: TransformId,
+            dataframe: pl::DataFrame,
+        ) -> iced::Task<Message> {
+            self.cache.insert(transform, dataframe);
+            iced::Task::done(Message::TransformOutputUpdated(transform))
         }
     }
 }
