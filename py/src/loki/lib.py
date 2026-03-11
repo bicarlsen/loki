@@ -42,7 +42,12 @@ def get_df(interactive: Optional[str] = None) -> pl.DataFrame:
     dataframe_request_msg = f"{TRANSFORM_DATAFRAME_REQUEST_METHOD} {dataset_key}\n"
     s.sendall(dataframe_request_msg.encode())
     ipc_dataset_file = s.recv(1024).decode()
-    return pl.read_ipc(ipc_dataset_file)
+    try:
+        return pl.read_ipc(ipc_dataset_file)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Could not get the dataframe. Perhaps you need to add the script into your pipeline?"
+        )
 
 
 def output(df: pl.DataFrame):

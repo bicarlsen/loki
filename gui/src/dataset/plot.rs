@@ -1,5 +1,7 @@
 //! Plot
 
+use core::num;
+
 use iced_aksel as aksel;
 use palette::{IntoColor, ShiftHue};
 use polars::prelude::{self as pl};
@@ -31,13 +33,29 @@ pub enum XAxisValues {
     Series(String),
 }
 
+impl XAxisValues {
+    pub fn take(&mut self) -> Option<String> {
+        match std::mem::replace(self, Self::Index) {
+            XAxisValues::Index => None,
+            XAxisValues::Series(label) => Some(label),
+        }
+    }
+
+    pub fn insert(&mut self, value: impl Into<String>) -> Option<String> {
+        match std::mem::replace(self, Self::Series(value.into())) {
+            XAxisValues::Index => None,
+            XAxisValues::Series(label) => Some(label),
+        }
+    }
+}
+
 impl Default for XAxisValues {
     fn default() -> Self {
         Self::Index
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct XAxis {
     scale: AxisScale,
     values: XAxisValues,
@@ -97,11 +115,12 @@ pub enum Axis {
 pub enum Message {
     SetTitle(String),
     UpdateXAxisValues(XAxisValues),
-    UpdateTraceGroup {
+    XAxisValuesUpdated,
+    DataframeChange(pl::DataFrame),
+    TraceGroup {
         axis: YAxisId,
         message: trace::GroupMessage,
     },
-    DataframeChange(pl::DataFrame),
 }
 
 pub struct Options {
@@ -147,6 +166,7 @@ impl Default for Options {
 }
 
 pub struct State {
+    options: Options,
     chart: aksel::State<&'static str, f64>,
     df: pl::DataFrame,
     title: String,
@@ -156,18 +176,19 @@ pub struct State {
 
 impl State {
     pub fn new(dataframe: pl::DataFrame, options: Options) -> Result<Self, ()> {
-        let Options { x_axis, y_axes } = options;
-
         let mut chart = aksel::State::new();
-        chart.set_axis(X_AXIS_ID, x_axis_to_aksel(&x_axis, &dataframe));
+        chart.set_axis(X_AXIS_ID, x_axis_to_aksel(&options.x_axis, &dataframe));
 
-        for axis in y_axes.iter() {
+        for axis in options.y_axes.iter() {
             let id = axis.aksel_id();
             let axis = y_axis_to_aksel(axis, &dataframe);
             chart.set_axis(id, axis);
         }
 
+        let x_axis = options.x_axis.clone();
+        let y_axes = options.y_axes.clone();
         Ok(Self {
+            options,
             chart,
             df: dataframe,
             title: "".to_string(),
@@ -176,24 +197,35 @@ impl State {
         })
     }
 
+    fn y_axis(&self, axis: YAxisId) -> Option<&YAxis> {
+        self.y_axes.iter().find(|ax| ax.id == axis)
+    }
+
+    fn y_axis_mut(&mut self, axis: YAxisId) -> Option<&mut YAxis> {
+        self.y_axes.iter_mut().find(|ax| ax.id == axis)
+    }
+}
+
+impl State {
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::SetTitle(_) => todo!(),
             Message::UpdateXAxisValues(value) => self.update_x_axis_values(value),
-            Message::UpdateTraceGroup { axis, message } => self.update_trace_group(axis, message),
-            Message::DataframeChange(dataframe) => {
-                self.df = dataframe;
-                iced::Task::none()
-            }
+            Message::XAxisValuesUpdated => self.rescale_xaxis(),
+            Message::TraceGroup { axis, message } => self.update_trace_group(axis, message),
+            Message::DataframeChange(dataframe) => self.dataframe_changed(dataframe),
         }
     }
 
     fn update_x_axis_values(&mut self, values: XAxisValues) -> iced::Task<Message> {
         // TODO: account for logarithmic scale
         self.x_axis.values = values;
+        iced::Task::done(Message::XAxisValuesUpdated)
+    }
+
+    fn rescale_xaxis(&mut self) -> iced::Task<Message> {
         self.chart
             .set_axis(X_AXIS_ID, x_axis_to_aksel(&self.x_axis, &self.df));
-
         iced::Task::none()
     }
 
@@ -215,19 +247,17 @@ impl State {
             } => {
                 let ax = self.y_axis_mut(axis).expect("axis should exist");
                 let bounds_change_task = match trace_message {
-                    trace::TraceMessage::ColumnChanged => {
-                        iced::Task::done(Message::UpdateTraceGroup {
-                            axis,
-                            message: trace::GroupMessage::BoundsChanged,
-                        })
-                    }
+                    trace::TraceMessage::ColumnChanged => iced::Task::done(Message::TraceGroup {
+                        axis,
+                        message: trace::GroupMessage::BoundsChanged,
+                    }),
                     _ => iced::Task::none(),
                 };
 
                 iced::Task::batch([
                     ax.traces
                         .update(message)
-                        .map(move |message| Message::UpdateTraceGroup { axis, message }),
+                        .map(move |message| Message::TraceGroup { axis, message }),
                     bounds_change_task,
                 ])
             }
@@ -235,17 +265,67 @@ impl State {
                 let ax = self.y_axis_mut(axis).expect("axis should exist");
                 ax.traces
                     .update(message)
-                    .map(move |message| Message::UpdateTraceGroup { axis, message })
+                    .map(move |message| Message::TraceGroup { axis, message })
             }
         }
     }
 
-    fn y_axis(&self, axis: YAxisId) -> Option<&YAxis> {
-        self.y_axes.iter().find(|ax| ax.id == axis)
-    }
+    fn dataframe_changed(&mut self, dataframe: pl::DataFrame) -> iced::Task<Message> {
+        let mut tasks = Vec::new();
 
-    fn y_axis_mut(&mut self, axis: YAxisId) -> Option<&mut YAxis> {
-        self.y_axes.iter_mut().find(|ax| ax.id == axis)
+        self.df = dataframe;
+        let columns = self
+            .df
+            .schema()
+            .iter_names()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        if let XAxisValues::Series(label) = &self.x_axis.values {
+            if !columns.contains(label) {
+                if let XAxisValues::Series(default) = &self.options.x_axis.values {
+                    self.x_axis.values.insert(default.clone());
+                } else {
+                    self.x_axis.values.take();
+                }
+                tasks.push(iced::Task::done(Message::XAxisValuesUpdated))
+            }
+        }
+
+        for axis in self.y_axes.iter_mut() {
+            let removed = axis
+                .traces
+                .extract_if(.., |trace| !columns.contains(trace.column()))
+                .collect::<Vec<_>>();
+            if removed.len() > 0 {
+                tasks.extend([
+                    iced::Task::done(Message::TraceGroup {
+                        axis: axis.id,
+                        message: trace::GroupMessage::TracesUpdated,
+                    }),
+                    iced::Task::done(Message::TraceGroup {
+                        axis: axis.id,
+                        message: trace::GroupMessage::BoundsChanged,
+                    }),
+                ]);
+            }
+            if axis.traces.len() == 0 {
+                let mut add = vec![];
+                if let Some(default) = self.options.y_axes.iter().find(|ax| ax.id == axis.id) {
+                    for trace in default.traces.iter() {
+                        if columns.contains(trace.column()) {
+                            add.push(trace.clone());
+                        }
+                    }
+                }
+                if add.len() == 0 {
+                    axis.add_trace(&columns[0]);
+                } else {
+                    axis.traces.extend(add);
+                }
+            }
+        }
+
+        iced::Task::batch(tasks)
     }
 }
 
@@ -268,7 +348,7 @@ impl State {
         let yaxis_groups = self.y_axes.iter().map(|axis| {
             axis.traces
                 .view(columns.clone())
-                .map(|message| Message::UpdateTraceGroup {
+                .map(|message| Message::TraceGroup {
                     axis: axis.id,
                     message: message,
                 })
@@ -308,6 +388,8 @@ enum TraceColor {
 impl State {
     fn draw_axis(&self, plot: &mut aksel::Plot<f64>, base_color: iced::Color, axis: &YAxis) {
         let num_traces = axis.traces.len();
+        assert_ne!(num_traces, 0, "axis traces must not be empty");
+
         let [r, g, b, a] = base_color.into_linear();
         let base_color_lch: palette::oklch::Oklcha =
             palette::rgb::Srgba::<f32>::from_linear(palette::LinSrgba::new(r, g, b, a))
@@ -411,9 +493,10 @@ mod trace {
         TraceAdded,
         RemoveTrace(TraceId),
         TraceRemoved,
+        TracesUpdated,
     }
 
-    #[derive(Debug, Clone, derive_more::Deref)]
+    #[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
     pub struct TraceGroup {
         traces: Vec<Trace>,
     }
@@ -464,6 +547,7 @@ mod trace {
                     iced::Task::done(GroupMessage::TraceRemoved)
                 }
                 GroupMessage::TraceRemoved => iced::Task::done(GroupMessage::BoundsChanged),
+                GroupMessage::TracesUpdated => iced::Task::none(),
             }
         }
 
@@ -560,6 +644,10 @@ mod trace {
                 color: Default::default(),
                 alpha: 1.0,
             }
+        }
+
+        pub fn id(&self) -> TraceId {
+            self.id
         }
 
         pub fn column(&self) -> &String {
