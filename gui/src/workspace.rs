@@ -14,7 +14,7 @@ pub enum DatasetState {
 #[derive(Default)]
 struct DatasetChildren {
     data_table: Option<iced::window::Id>,
-    transforms: Option<iced::window::Id>,
+    pipeline: Option<iced::window::Id>,
     file_browser: Option<iced::window::Id>,
 }
 
@@ -22,7 +22,7 @@ impl DatasetChildren {
     pub fn take_child(&mut self, kind: dataset::ChildWindowType) -> Option<iced::window::Id> {
         match kind {
             dataset::ChildWindowType::DataTable => self.data_table.take(),
-            dataset::ChildWindowType::Pipeline => self.transforms.take(),
+            dataset::ChildWindowType::Pipeline => self.pipeline.take(),
             dataset::ChildWindowType::FileBrowser => self.file_browser.take(),
         }
     }
@@ -81,6 +81,7 @@ pub enum Message {
     DatasetClosed {
         path: PathBuf,
     },
+    OpenOrFocusDataset(PathBuf),
     FocusWindow(iced::window::Id),
 }
 
@@ -132,6 +133,9 @@ impl Workspace {
             }
             Message::DatasetError { path, error } => self.dataset_error(path, error),
             Message::DatasetClosed { path } => self.dataset_closed(path),
+            Message::OpenOrFocusDataset(dataset) => {
+                todo!()
+            }
             Message::FocusWindow(id) => iced::window::gain_focus::<Message>(id).discard(),
         }
     }
@@ -172,13 +176,16 @@ impl Workspace {
                 }
             };
 
+            let btn_dataset = iced::widget::button(iced::widget::text(label))
+                .on_press(Message::OpenOrFocusDataset(dataset.path.clone()));
+
             let child_data_table = dataset.children.data_table.as_ref().map(|window| {
                 iced::widget::button(iced::widget::text("Data table"))
                     .on_press(Message::FocusWindow(window.clone()))
             });
 
-            let child_transforms = dataset.children.transforms.as_ref().map(|window| {
-                iced::widget::button(iced::widget::text("Transforms"))
+            let child_pipelines = dataset.children.pipeline.as_ref().map(|window| {
+                iced::widget::button(iced::widget::text("Pipeline"))
                     .on_press(Message::FocusWindow(window.clone()))
             });
 
@@ -189,9 +196,9 @@ impl Workspace {
 
             let children = iced::widget::row![
                 iced::widget::space().width(iced::Length::Fixed(20.0)),
-                iced::widget::column![child_data_table, child_transforms, child_file_browser,]
+                iced::widget::column![child_data_table, child_pipelines, child_file_browser,]
             ];
-            iced::widget::column![iced::widget::text(label), children].into()
+            iced::widget::column![btn_dataset, children].into()
         }));
 
         iced::widget::column![dataset_commands, dataset_list].into()
@@ -301,10 +308,10 @@ impl Workspace {
             }
             dataset::ChildWindowType::Pipeline => {
                 assert!(
-                    dataset.children.transforms.is_none(),
-                    "transforms already exists"
+                    dataset.children.pipeline.is_none(),
+                    "pipeline already exists"
                 );
-                let _ = dataset.children.transforms.insert(window);
+                let _ = dataset.children.pipeline.insert(window);
             }
             dataset::ChildWindowType::FileBrowser => {
                 assert!(
@@ -337,7 +344,7 @@ impl Workspace {
     }
 
     fn dataset_error(&mut self, path: PathBuf, error: String) -> iced::Task<Message> {
-        todo!()
+        todo!("dataset error: {error}")
     }
 
     fn dataset_closed(&mut self, path: PathBuf) -> iced::Task<Message> {

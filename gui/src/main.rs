@@ -61,6 +61,7 @@ enum Message {
         path: PathBuf,
         error: String,
     },
+    DatasetLastWindowClosed(PathBuf),
     AppClosed,
 }
 
@@ -144,6 +145,12 @@ impl App {
                 .workspace
                 .update(workspace::Message::DatasetError { path, error })
                 .map(Into::into),
+            Message::DatasetLastWindowClosed(dataset) => {
+                self.datasets
+                    .remove(&dataset)
+                    .expect("dataset should exist");
+                iced::Task::done(workspace::Message::DatasetClosed { path: dataset }.into())
+            }
         }
     }
 
@@ -333,21 +340,40 @@ impl App {
                 iced::Task::done(workspace::Message::WorkspaceClosed(id).into())
             }
             WindowKind::Dataset(path) => {
-                let keep_dataset = self.windows.values().any(|window| {
-                    if let WindowKind::Dataset(dataset_path) = window {
-                        *dataset_path == path
+                let last_dataset_window = !self.windows.values().any(|window| {
+                    if let WindowKind::DatasetChild { dataset, .. } = window {
+                        *dataset == path
                     } else {
                         false
                     }
                 });
-                if keep_dataset {
-                    iced::Task::none()
+                if last_dataset_window {
+                    iced::Task::done(Message::DatasetLastWindowClosed(path))
                 } else {
-                    let _ = self.datasets.remove(&path);
-                    iced::Task::done(workspace::Message::DatasetClosed { path }.into())
+                    iced::Task::none()
                 }
             }
             WindowKind::DatasetChild { dataset, kind } => {
+                let mut task_window = iced::Task::done(
+                    workspace::Message::DatasetChildWindowClosed {
+                        path: dataset.clone(),
+                        kind,
+                    }
+                    .into(),
+                );
+
+                let last_dataset_window = !self.windows.values().any(|window| match window {
+                    WindowKind::Workspace => false,
+                    WindowKind::Dataset(other) => *other == dataset,
+                    WindowKind::DatasetChild { dataset: other, .. } => *other == dataset,
+                });
+
+                if last_dataset_window {
+                    task_window = task_window.chain(iced::Task::done(
+                        Message::DatasetLastWindowClosed(dataset.clone()),
+                    ));
+                }
+
                 let dataset_msg = match kind {
                     dataset::ChildWindowType::DataTable => dataset::Message::DataTableClosed,
                     dataset::ChildWindowType::Pipeline => dataset::Message::PipelineClosed,
@@ -359,13 +385,7 @@ impl App {
                         id: dataset.clone(),
                         message: dataset_msg,
                     }),
-                    iced::Task::done(
-                        workspace::Message::DatasetChildWindowClosed {
-                            path: dataset,
-                            kind,
-                        }
-                        .into(),
-                    ),
+                    task_window,
                 ])
             }
         }

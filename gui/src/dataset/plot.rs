@@ -1,11 +1,10 @@
 //! Plot
-
-use core::num;
+use std::collections::HashMap;
 
 use iced_aksel as aksel;
-use palette::{IntoColor, ShiftHue};
 use polars::prelude::{self as pl};
 
+type PlotValue = f64;
 pub type YAxisId = u8;
 
 pub const X_AXIS_ID: &str = "x";
@@ -111,7 +110,7 @@ pub enum Axis {
     Y(YAxisId),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::From)]
 pub enum Message {
     SetTitle(String),
     UpdateXAxisValues(XAxisValues),
@@ -121,6 +120,8 @@ pub enum Message {
         axis: YAxisId,
         message: trace::GroupMessage,
     },
+    #[from]
+    Data(data::Message),
 }
 
 pub struct Options {
@@ -167,11 +168,9 @@ impl Default for Options {
 
 pub struct State {
     options: Options,
-    chart: aksel::State<&'static str, f64>,
-    df: pl::DataFrame,
+    chart: aksel::State<&'static str, PlotValue>,
+    data: aksel::Cached<data::State>,
     title: String,
-    x_axis: XAxis,
-    y_axes: Vec<YAxis>,
 }
 
 impl State {
@@ -187,22 +186,13 @@ impl State {
 
         let x_axis = options.x_axis.clone();
         let y_axes = options.y_axes.clone();
+        let data = data::State::new(dataframe, x_axis, y_axes);
         Ok(Self {
             options,
             chart,
-            df: dataframe,
+            data: aksel::Cached::new(data),
             title: "".to_string(),
-            x_axis,
-            y_axes,
         })
-    }
-
-    fn y_axis(&self, axis: YAxisId) -> Option<&YAxis> {
-        self.y_axes.iter().find(|ax| ax.id == axis)
-    }
-
-    fn y_axis_mut(&mut self, axis: YAxisId) -> Option<&mut YAxis> {
-        self.y_axes.iter_mut().find(|ax| ax.id == axis)
     }
 }
 
@@ -219,13 +209,15 @@ impl State {
 
     fn update_x_axis_values(&mut self, values: XAxisValues) -> iced::Task<Message> {
         // TODO: account for logarithmic scale
-        self.x_axis.values = values;
+        let data = self.data.edit();
+        data.x_axis.values = values;
         iced::Task::done(Message::XAxisValuesUpdated)
     }
 
     fn rescale_xaxis(&mut self) -> iced::Task<Message> {
-        self.chart
-            .set_axis(X_AXIS_ID, x_axis_to_aksel(&self.x_axis, &self.df));
+        let data = self.data.get();
+        let axis = x_axis_to_aksel(&data.x_axis, &data.df);
+        self.chart.set_axis(X_AXIS_ID, axis);
         iced::Task::none()
     }
 
@@ -236,16 +228,18 @@ impl State {
     ) -> iced::Task<Message> {
         match message {
             trace::GroupMessage::BoundsChanged => {
-                let ax = self.y_axis(axis).expect("axis should exist");
+                let data = self.data.get();
+                let ax = data.y_axis(axis).expect("axis should exist");
                 self.chart
-                    .set_axis(Y_AXIS_IDS[ax.id as usize], y_axis_to_aksel(&ax, &self.df));
+                    .set_axis(Y_AXIS_IDS[ax.id as usize], y_axis_to_aksel(&ax, &data.df));
                 iced::Task::none()
             }
             trace::GroupMessage::UpdateTrace {
                 message: ref trace_message,
                 ..
             } => {
-                let ax = self.y_axis_mut(axis).expect("axis should exist");
+                let data = self.data.edit();
+                let ax = data.y_axis_mut(axis).expect("axis should exist");
                 let bounds_change_task = match trace_message {
                     trace::TraceMessage::ColumnChanged => iced::Task::done(Message::TraceGroup {
                         axis,
@@ -262,7 +256,8 @@ impl State {
                 ])
             }
             _ => {
-                let ax = self.y_axis_mut(axis).expect("axis should exist");
+                let data = self.data.edit();
+                let ax = data.y_axis_mut(axis).expect("axis should exist");
                 ax.traces
                     .update(message)
                     .map(move |message| Message::TraceGroup { axis, message })
@@ -273,25 +268,26 @@ impl State {
     fn dataframe_changed(&mut self, dataframe: pl::DataFrame) -> iced::Task<Message> {
         let mut tasks = Vec::new();
 
-        self.df = dataframe;
-        let columns = self
+        let data = self.data.edit();
+        data.df = dataframe;
+        let columns = data
             .df
             .schema()
             .iter_names()
             .map(|name| name.to_string())
             .collect::<Vec<_>>();
-        if let XAxisValues::Series(label) = &self.x_axis.values {
+        if let XAxisValues::Series(label) = &data.x_axis.values {
             if !columns.contains(label) {
                 if let XAxisValues::Series(default) = &self.options.x_axis.values {
-                    self.x_axis.values.insert(default.clone());
+                    data.x_axis.values.insert(default.clone());
                 } else {
-                    self.x_axis.values.take();
+                    data.x_axis.values.take();
                 }
                 tasks.push(iced::Task::done(Message::XAxisValuesUpdated))
             }
         }
 
-        for axis in self.y_axes.iter_mut() {
+        for axis in data.y_axes.iter_mut() {
             let removed = axis
                 .traces
                 .extract_if(.., |trace| !columns.contains(trace.column()))
@@ -331,21 +327,24 @@ impl State {
 
 impl State {
     pub fn view(&self) -> iced::Element<'_, Message> {
-        let plot = aksel::Chart::new(&self.chart).plot_data(self, X_AXIS_ID, Y_AXIS_IDS[0]);
-
+        let plot =
+            aksel::Chart::new(&self.chart).plot_data(self.data.get(), X_AXIS_ID, Y_AXIS_IDS[0]);
+        let plot: iced::Element<'_, _> = plot.into();
+        let plot = plot.map(Message::Data);
         let axes_controls = self.axes_controls();
         iced::widget::column![plot, axes_controls].into()
     }
 
     fn axes_controls(&self) -> iced::Element<'_, Message> {
-        let columns = self
+        let data = self.data.get();
+        let columns = data
             .df
             .schema()
             .iter()
             .map(|(name, _)| name.to_string())
             .collect::<Vec<_>>();
 
-        let yaxis_groups = self.y_axes.iter().map(|axis| {
+        let yaxis_groups = data.y_axes.iter().map(|axis| {
             axis.traces
                 .view(columns.clone())
                 .map(|message| Message::TraceGroup {
@@ -359,7 +358,7 @@ impl State {
             .collect::<Vec<_>>();
         let pl_xaxis = iced::widget::pick_list(
             columns,
-            match &self.x_axis.values {
+            match &data.x_axis.values {
                 XAxisValues::Index => None,
                 XAxisValues::Series(column) => Some(column.clone()),
             },
@@ -380,107 +379,12 @@ impl State {
     }
 }
 
-enum TraceColor {
-    Single(iced::Color),
-    List(Vec<iced::Color>),
-}
-
-impl State {
-    fn draw_axis(&self, plot: &mut aksel::Plot<f64>, base_color: iced::Color, axis: &YAxis) {
-        let num_traces = axis.traces.len();
-        assert_ne!(num_traces, 0, "axis traces must not be empty");
-
-        let [r, g, b, a] = base_color.into_linear();
-        let base_color_lch: palette::oklch::Oklcha =
-            palette::rgb::Srgba::<f32>::from_linear(palette::LinSrgba::new(r, g, b, a))
-                .into_color();
-
-        let trace_color_shift = 180.0 / num_traces as f32;
-        for (idx, trace) in axis.traces.iter().enumerate() {
-            let trace_color = base_color_lch
-                .clone()
-                .shift_hue(trace_color_shift * idx as f32);
-
-            let color = match trace.color() {
-                trace::Color::Default => {
-                    let color: palette::LinSrgba = trace_color.into_color();
-                    let (r, g, b, a) = color.into_components();
-                    let color = iced::Color::from_linear_rgba(r, g, b, a);
-                    TraceColor::Single(color)
-                }
-                trace::Color::Column(column) => {
-                    let colors = self.df.column(column).unwrap();
-                    let (min, max) = column_minmax_f64(colors);
-                    let colors = column_to_values_f64(colors);
-
-                    let range = max - min;
-                    let colors = colors
-                        .into_iter()
-                        .map(|value| (value - min) / range)
-                        .map(|shift| trace_color.shift_hue(shift as f32 * 180.0))
-                        .map(|color| {
-                            let color: palette::LinSrgba = color.into_color();
-                            let (r, g, b, a) = color.into_components();
-                            iced::Color::from_linear_rgba(r, g, b, a)
-                        })
-                        .collect::<Vec<_>>();
-
-                    TraceColor::List(colors)
-                }
-                trace::Color::Custom(_) => todo!(),
-            };
-
-            self.draw_trace(plot, color, trace);
-        }
-    }
-
-    fn draw_trace(&self, plot: &mut aksel::Plot<f64>, color: TraceColor, trace: &trace::Trace) {
-        let column_label = trace.column();
-        let y = self.df.column(column_label).unwrap();
-        let y = column_to_values_f64(y);
-
-        let x = match &self.x_axis.values {
-            XAxisValues::Series(column) => {
-                let x = self.df.column(column).unwrap();
-                column_to_values_f64(x)
-            }
-            XAxisValues::Index => (0..self.df.height()).map(|x| x as f64).collect::<Vec<_>>(),
-        };
-
-        let colors = match color {
-            TraceColor::Single(color) => vec![color; self.df.height()],
-            TraceColor::List(colors) => colors,
-        };
-
-        let points = itertools::izip!(x, y, colors);
-        for (x, y, color) in points {
-            plot.add_shape(
-                aksel::shape::Ellipse::new(
-                    aksel::PlotPoint::new(x, y),
-                    aksel::Measure::Screen(1.0),
-                    aksel::Measure::Screen(1.0),
-                )
-                .fill(color),
-            );
-        }
-    }
-}
-
-impl aksel::PlotData<f64> for State {
-    fn draw(&self, plot: &mut aksel::Plot<f64>, theme: &iced::advanced::graphics::core::Theme) {
-        for axis in self.y_axes.iter() {
-            let base_color = theme.palette().primary;
-            self.draw_axis(plot, base_color, axis);
-        }
-    }
-}
-
 mod trace {
+    use crate::icon;
     use polars::prelude as pl;
 
-    use crate::icon;
-
     pub type TraceId = u8;
+    pub type MarkerSize = f32;
 
     #[derive(Clone, Debug)]
     pub enum GroupMessage {
@@ -620,8 +524,17 @@ mod trace {
         ColumnChange(String),
         ColumnChanged,
         ColorChange(Color),
+        MakrkerSizeChange(MarkerSize),
         /// Remove trace.
         Remove,
+    }
+
+    #[derive(Clone, Copy, Default, Debug)]
+    pub enum Marker {
+        #[default]
+        Circle,
+        Square,
+        Triangle,
     }
 
     // TODO: Add marker option.
@@ -634,6 +547,8 @@ mod trace {
         /// Aplha (opacity) channel.
         /// Between 0 (transparent) and 1 (opaque).
         alpha: f64,
+        marker: Marker,
+        marker_size: MarkerSize,
     }
 
     impl Trace {
@@ -643,6 +558,8 @@ mod trace {
                 column: column.into(),
                 color: Default::default(),
                 alpha: 1.0,
+                marker: Default::default(),
+                marker_size: 1.0,
             }
         }
 
@@ -668,6 +585,14 @@ mod trace {
             } else {
                 self.alpha = alpha
             }
+        }
+
+        pub fn marker(&self) -> Marker {
+            self.marker
+        }
+
+        pub fn marker_size(&self) -> MarkerSize {
+            self.marker_size
         }
 
         pub fn minmax_f64(&self, dataframe: &pl::DataFrame) -> (f64, f64) {
@@ -696,6 +621,10 @@ mod trace {
                 TraceMessage::ColumnChanged => iced::Task::none(),
                 TraceMessage::ColorChange(color) => {
                     self.color = color;
+                    iced::Task::none()
+                }
+                TraceMessage::MakrkerSizeChange(size) => {
+                    self.marker_size = size;
                     iced::Task::none()
                 }
                 TraceMessage::Remove => iced::Task::none(),
@@ -733,21 +662,193 @@ mod trace {
             )
             .placeholder("<default>");
 
+            let sl_marker_size = iced::widget::slider(1..=10, self.marker_size as i32, |size| {
+                TraceMessage::MakrkerSizeChange(size as MarkerSize)
+            });
+
             let btn_remove = removable
                 .then_some(iced::widget::button(icon::minus()).on_press(TraceMessage::Remove));
 
-            iced::widget::row![pl_column, pl_color, btn_remove].into()
+            iced::widget::row![pl_column, pl_color, sl_marker_size, btn_remove].into()
         }
     }
 }
 
-fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<f64> {
+mod data {
+    use super::trace;
+    use iced_aksel as aksel;
+    use palette::{IntoColor, ShiftHue};
+    use polars::prelude as pl;
+
+    #[derive(Debug, Clone)]
+    pub enum Message {}
+
+    pub struct State {
+        pub(super) df: pl::DataFrame,
+        pub(super) x_axis: super::XAxis,
+        pub(super) y_axes: Vec<super::YAxis>,
+        hovered_id: Option<aksel::interaction::Id>,
+    }
+
+    impl State {
+        pub fn new(df: pl::DataFrame, x_axis: super::XAxis, y_axes: Vec<super::YAxis>) -> Self {
+            Self {
+                df,
+                x_axis,
+                y_axes,
+                hovered_id: Default::default(),
+            }
+        }
+
+        pub fn y_axis(&self, axis: super::YAxisId) -> Option<&super::YAxis> {
+            self.y_axes.iter().find(|ax| ax.id == axis)
+        }
+
+        pub fn y_axis_mut(&mut self, axis: super::YAxisId) -> Option<&mut super::YAxis> {
+            self.y_axes.iter_mut().find(|ax| ax.id == axis)
+        }
+    }
+
+    enum TraceColor {
+        Single(iced::Color),
+        List(Vec<iced::Color>),
+    }
+
+    impl State {
+        fn draw_axis(
+            &self,
+            plot: &mut aksel::Plot<super::PlotValue, Message>,
+            base_color: iced::Color,
+            axis: &super::YAxis,
+        ) {
+            let num_traces = axis.traces.len();
+            assert_ne!(num_traces, 0, "axis traces must not be empty");
+
+            let [r, g, b, a] = base_color.into_linear();
+            let base_color_lch: palette::oklch::Oklcha =
+                palette::rgb::Srgba::<f32>::from_linear(palette::LinSrgba::new(r, g, b, a))
+                    .into_color();
+
+            let trace_color_shift = 180.0 / num_traces as f32;
+            for (idx, trace) in axis.traces.iter().enumerate() {
+                let trace_color = base_color_lch
+                    .clone()
+                    .shift_hue(trace_color_shift * idx as f32);
+
+                let color = match trace.color() {
+                    trace::Color::Default => {
+                        let color: palette::LinSrgba = trace_color.into_color();
+                        let (r, g, b, a) = color.into_components();
+                        let color = iced::Color::from_linear_rgba(r, g, b, a);
+                        TraceColor::Single(color)
+                    }
+                    trace::Color::Column(column) => {
+                        let colors = self.df.column(column).unwrap();
+                        let (min, max) = super::column_minmax_f64(colors);
+                        let colors = super::column_to_values_f64(colors);
+
+                        let range = max - min;
+                        let colors = colors
+                            .into_iter()
+                            .map(|value| (value - min) / range)
+                            .map(|shift| trace_color.shift_hue(shift as f32 * 180.0))
+                            .map(|color| {
+                                let color: palette::LinSrgba = color.into_color();
+                                let (r, g, b, a) = color.into_components();
+                                iced::Color::from_linear_rgba(r, g, b, a)
+                            })
+                            .collect::<Vec<_>>();
+
+                        TraceColor::List(colors)
+                    }
+                    trace::Color::Custom(_) => todo!(),
+                };
+
+                self.draw_trace(plot, color, trace);
+            }
+        }
+
+        fn draw_trace(
+            &self,
+            plot: &mut aksel::Plot<super::PlotValue, Message>,
+            color: TraceColor,
+            trace: &trace::Trace,
+        ) {
+            let column_label = trace.column();
+            let y = self.df.column(column_label).unwrap();
+            let y = super::column_to_values_f64(y);
+
+            let x = match &self.x_axis.values {
+                super::XAxisValues::Series(column) => {
+                    let x = self.df.column(column).unwrap();
+                    super::column_to_values_f64(x)
+                }
+                super::XAxisValues::Index => (0..self.df.height())
+                    .map(|x| x as super::PlotValue)
+                    .collect::<Vec<_>>(),
+            };
+
+            let colors = match color {
+                TraceColor::Single(color) => vec![color; self.df.height()],
+                TraceColor::List(colors) => colors,
+            };
+
+            let points = itertools::izip!(x, y, colors);
+            for (x, y, color) in points {
+                let shape_id = match trace.marker() {
+                    trace::Marker::Circle => {
+                        let shape = aksel::shape::Ellipse::circle(
+                            aksel::PlotPoint::new(x, y),
+                            aksel::Measure::Screen(trace.marker_size()),
+                        )
+                        .fill(color);
+                        plot.render(shape);
+                    }
+                    trace::Marker::Square => {
+                        let shape = aksel::shape::Rectangle::centered(
+                            aksel::PlotPoint::new(x, y),
+                            aksel::Measure::Screen(trace.marker_size()),
+                            aksel::Measure::Screen(trace.marker_size()),
+                        )
+                        .fill(color);
+                        plot.render(shape);
+                    }
+                    trace::Marker::Triangle => {
+                        let shape = aksel::shape::Triangle::centered(
+                            aksel::PlotPoint::new(x, y),
+                            aksel::Measure::Screen(trace.marker_size()),
+                            aksel::Measure::Screen(trace.marker_size()),
+                        )
+                        .fill(color);
+                        plot.render(shape);
+                    }
+                };
+            }
+        }
+    }
+
+    impl aksel::PlotData<super::PlotValue, Message> for State {
+        fn draw(
+            &self,
+            plot: &mut aksel::Plot<super::PlotValue, Message>,
+            theme: &iced::advanced::graphics::core::Theme,
+        ) {
+            for axis in self.y_axes.iter() {
+                let base_color = theme.palette().primary;
+                self.draw_axis(plot, base_color, axis);
+            }
+        }
+    }
+}
+
+fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     const POSITION: aksel::axis::Position = aksel::axis::Position::Bottom;
 
     match &axis.values {
-        XAxisValues::Index => {
-            aksel::Axis::new(aksel::scale::Linear::new(0.0, df.height() as f64), POSITION)
-        }
+        XAxisValues::Index => aksel::Axis::new(
+            aksel::scale::Linear::new(0.0, df.height() as PlotValue),
+            POSITION,
+        ),
         XAxisValues::Series(name) => {
             let column = df.column(name).unwrap();
             let (min, max) = column_minmax_f64(column);
@@ -761,7 +862,7 @@ fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<f64> {
     }
 }
 
-fn y_axis_to_aksel(axis: &YAxis, df: &pl::DataFrame) -> aksel::Axis<f64> {
+fn y_axis_to_aksel(axis: &YAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     let (min, max) = axis.traces.minmax_f64(df);
     match axis.scale {
         AxisScale::Linear => aksel::Axis::new(aksel::scale::Linear::new(min, max), axis.position),

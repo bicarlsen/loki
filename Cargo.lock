@@ -2109,8 +2109,7 @@ dependencies = [
 [[package]]
 name = "iced_aksel"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "506164a2f6a8d2e2bf0a2998df7449203004ba56f6e3c8e985942327ccaebf35"
+source = "git+https://github.com/QuistHQ/iced_aksel?branch=shape-interactivity#bad5dfb189b2e6a8938b97786540ef68093eab2d"
 dependencies = [
  "aksel",
  "derivative",
@@ -2119,11 +2118,16 @@ dependencies = [
  "iced_core",
  "iced_graphics",
  "iced_renderer",
+ "iced_tiny_skia",
+ "iced_wgpu",
  "indexmap",
  "lru",
  "lyon",
  "lyon_path",
  "lyon_tessellation",
+ "paste",
+ "rapidhash",
+ "smallvec",
 ]
 
 [[package]]
@@ -2231,6 +2235,7 @@ dependencies = [
  "iced_core",
  "iced_futures",
  "log",
+ "lyon_path",
  "raw-window-handle",
  "rustc-hash 2.1.1",
  "thiserror 2.0.18",
@@ -2306,6 +2311,7 @@ dependencies = [
  "iced_debug",
  "iced_graphics",
  "log",
+ "lyon",
  "rustc-hash 2.1.1",
  "thiserror 2.0.18",
  "wgpu",
@@ -4608,6 +4614,15 @@ name = "rangemap"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "973443cf09a9c8656b574a866ab68dfa19f0867d0340648c7d2f6a71b8a8ea68"
+
+[[package]]
+name = "rapidhash"
+version = "4.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e48930979c155e2f33aa36ab3119b5ee81332beb6482199a8ecd6029b80b59"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "raw-cpuid"
