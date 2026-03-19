@@ -217,7 +217,37 @@ impl Dataset {
                 let _ = self.children.files_browser.take();
                 iced::Task::none()
             }
-            Message::Plot(message) => self.plot.update(message).map(Into::into),
+            Message::Plot(message) => {
+                let data_table_msg = if let Some((_, data_table)) =
+                    self.children.data_table.as_mut()
+                {
+                    let data_table_msg = match &message {
+                        plot::Message::Data(plot::data::Message::PointHovered {
+                            point, ..
+                        }) => {
+                            let idx = self
+                                .plot
+                                .record_idx_by_point_id(point)
+                                .expect("record should exist");
+
+                            Some(data_table::Message::HighlightRecord(idx))
+                        }
+                        plot::Message::Data(plot::data::Message::BackgroundHovered) => {
+                            Some(data_table::Message::ClearHighlight)
+                        }
+                        _ => None,
+                    };
+
+                    match data_table_msg {
+                        None => iced::Task::none(),
+                        Some(msg) => data_table.update(msg).map(Into::into),
+                    }
+                } else {
+                    iced::Task::none()
+                };
+
+                iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
+            }
             Message::DataTable(message) => {
                 if let Some((_, data_table)) = self.children.data_table.as_mut() {
                     data_table.update(message).map(Message::DataTable)
@@ -243,27 +273,28 @@ impl Dataset {
         }
     }
 
-    pub fn view(&self, window: &iced::window::Id) -> iced::Element<'_, Message> {
+    pub fn view(
+        &self,
+        theme: &iced::advanced::graphics::core::Theme,
+
+        window: &iced::window::Id,
+    ) -> iced::Element<'_, Message> {
         if self.window_id == *window {
             let plot_container = widget::container(self.plot.view().map(Message::Plot));
-
             let btn_open_data_table = widget::button("Data table").on_press(Message::OpenDataTable);
-
             let btn_pipeline = widget::button("Pipeline").on_press(Message::OpenPipeline);
-
             let btn_file_browser = self
                 .state
                 .is_file_collection()
                 .then_some(widget::button("Files browser").on_press(Message::OpenFilesBrowser));
 
             let controls = widget::column![btn_open_data_table, btn_pipeline, btn_file_browser,];
-
             let controls_container = widget::container(controls);
             return widget::row![plot_container, controls_container].into();
         }
         if let Some((id, data_table)) = &self.children.data_table {
             if id == window {
-                return data_table.view().map(Message::DataTable);
+                return data_table.view(theme).map(Message::DataTable);
             }
         }
         if let Some(id) = &self.children.pipeline {
@@ -305,15 +336,23 @@ mod data_table {
     #[derive(Debug, Clone)]
     pub enum Message {
         DataframeUpdated(pl::DataFrame),
+        /// Highlight the record at the given index.
+        HighlightRecord(usize),
+        /// No record should be highlighted.
+        ClearHighlight,
     }
 
     pub struct DataTable {
         df: pl::DataFrame,
+        highlight: Option<usize>,
     }
 
     impl DataTable {
         pub fn new(df: pl::DataFrame) -> Self {
-            Self { df }
+            Self {
+                df,
+                highlight: Default::default(),
+            }
         }
 
         pub fn update(&mut self, message: Message) -> iced::Task<Message> {
@@ -322,10 +361,22 @@ mod data_table {
                     self.df = dataframe;
                     iced::Task::none()
                 }
+                Message::HighlightRecord(idx) => {
+                    let _ = self.highlight.insert(idx);
+                    iced::Task::none()
+                }
+                Message::ClearHighlight => {
+                    let _ = self.highlight.take();
+                    iced::Task::none()
+                }
             }
         }
 
-        pub fn view(&self) -> iced::Element<'_, Message> {
+        pub fn view(
+            &self,
+
+            theme: &iced::advanced::graphics::core::Theme,
+        ) -> iced::Element<'_, Message> {
             use widget::text;
 
             // TODO: Headers should be sticky
@@ -333,7 +384,7 @@ mod data_table {
             let columns = self.df.schema().iter().map(|(name, _dtype)| {
                 widget::table::column(name.as_str(), |idx: usize| {
                     let col = self.df.column(name.as_str()).unwrap();
-                    match col.get(idx).unwrap() {
+                    let mut text = match col.get(idx).unwrap() {
                         pl::AnyValue::Null => text(""),
                         pl::AnyValue::Boolean(value) => {
                             if value {
@@ -346,7 +397,13 @@ mod data_table {
                         pl::AnyValue::String(value) => text(value),
                         pl::AnyValue::UInt8(value) => text(format!("{value:?}")),
                         _ => todo!(),
+                    };
+                    if let Some(highlight) = &self.highlight {
+                        if idx == *highlight {
+                            text = text.color(theme.palette().success);
+                        }
                     }
+                    text
                 })
             });
 

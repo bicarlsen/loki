@@ -1,8 +1,8 @@
 //! Plot
-use std::collections::HashMap;
-
 use iced_aksel as aksel;
+use palette::IntoColor;
 use polars::prelude::{self as pl};
+use std::collections::HashMap;
 
 type PlotValue = f64;
 pub type YAxisId = u8;
@@ -194,6 +194,10 @@ impl State {
             title: "".to_string(),
         })
     }
+
+    pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
+        self.data.get().record_idx_by_point_id(id)
+    }
 }
 
 impl State {
@@ -204,6 +208,7 @@ impl State {
             Message::XAxisValuesUpdated => self.rescale_xaxis(),
             Message::TraceGroup { axis, message } => self.update_trace_group(axis, message),
             Message::DataframeChange(dataframe) => self.dataframe_changed(dataframe),
+            Message::Data(message) => self.update_data(message),
         }
     }
 
@@ -323,12 +328,58 @@ impl State {
 
         iced::Task::batch(tasks)
     }
+
+    fn update_data(&mut self, message: data::Message) -> iced::Task<Message> {
+        match message {
+            data::Message::ChartDragged(delta) => {
+                // TODO: Account for multiple y axes
+                self.chart
+                    .pan_axes(X_AXIS_ID, Y_AXIS_IDS[0], delta.x, delta.y);
+                iced::Task::none()
+            }
+            data::Message::ChartScrolled(aksel::ScrollEvent {
+                delta, position, ..
+            }) => {
+                let zoom_factor = match delta {
+                    iced::mouse::ScrollDelta::Lines { y, .. }
+                    | iced::mouse::ScrollDelta::Pixels { y, .. } => {
+                        if y > 0.0 {
+                            1.1
+                        } else {
+                            0.9
+                        }
+                    }
+                };
+
+                // TODO: Account for multiple y axes
+                self.chart
+                    .axis_mut(&X_AXIS_ID)
+                    .zoom(zoom_factor, Some(position.x));
+                self.chart
+                    .axis_mut(&Y_AXIS_IDS[0])
+                    .zoom(zoom_factor, Some(position.y));
+                iced::Task::none()
+            }
+            _ => self.data.edit().update(message).map(Message::Data),
+        }
+    }
 }
 
 impl State {
     pub fn view(&self) -> iced::Element<'_, Message> {
-        let plot =
-            aksel::Chart::new(&self.chart).plot_data(self.data.get(), X_AXIS_ID, Y_AXIS_IDS[0]);
+        let plot = aksel::Chart::new(&self.chart)
+            .plot_data(self.data.get(), X_AXIS_ID, Y_AXIS_IDS[0])
+            .on_hover(|_| data::Message::BackgroundHovered)
+            .on_press(|event: aksel::PressEvent<iced::Point>| {
+                (event.button == iced::mouse::Button::Left)
+                    .then_some(data::Message::BackgroundPressed.into())
+            })
+            .on_drag(|event: aksel::DragEvent<aksel::Delta>| {
+                (event.button_held == iced::mouse::Button::Left)
+                    .then_some(data::Message::ChartDragged(event.delta).into())
+            })
+            .on_scroll(data::Message::ChartScrolled);
+
         let plot: iced::Element<'_, _> = plot.into();
         let plot = plot.map(Message::Data);
         let axes_controls = self.axes_controls();
@@ -524,7 +575,7 @@ mod trace {
         ColumnChange(String),
         ColumnChanged,
         ColorChange(Color),
-        MakrkerSizeChange(MarkerSize),
+        MarkerSizeChange(MarkerSize),
         /// Remove trace.
         Remove,
     }
@@ -623,7 +674,7 @@ mod trace {
                     self.color = color;
                     iced::Task::none()
                 }
-                TraceMessage::MakrkerSizeChange(size) => {
+                TraceMessage::MarkerSizeChange(size) => {
                     self.marker_size = size;
                     iced::Task::none()
                 }
@@ -663,7 +714,7 @@ mod trace {
             .placeholder("<default>");
 
             let sl_marker_size = iced::widget::slider(1..=10, self.marker_size as i32, |size| {
-                TraceMessage::MakrkerSizeChange(size as MarkerSize)
+                TraceMessage::MarkerSizeChange(size as MarkerSize)
             });
 
             let btn_remove = removable
@@ -674,29 +725,80 @@ mod trace {
     }
 }
 
-mod data {
+pub(super) mod data {
+    use crate::dataset::plot::{color_to_lch, lch_to_color};
+
     use super::trace;
     use iced_aksel as aksel;
-    use palette::{IntoColor, ShiftHue};
+    use palette::ShiftHue;
     use polars::prelude as pl;
 
     #[derive(Debug, Clone)]
-    pub enum Message {}
+    pub enum Message {
+        BackgroundHovered,
+        BackgroundPressed,
+        ChartDragged(aksel::Delta),
+        ChartScrolled(aksel::ScrollEvent<iced::Point>),
+        PointHovered {
+            point: aksel::interaction::Id,
+            modifiers: iced::keyboard::Modifiers,
+        },
+        PointMouseDown {
+            point: aksel::interaction::Id,
+            event: aksel::PressEvent<iced::Point>,
+        },
+    }
+
+    pub struct Points {
+        by_idx: Vec<aksel::interaction::Id>,
+        by_id: std::collections::HashMap<aksel::interaction::Id, usize>,
+    }
+
+    impl Points {
+        pub fn new(height: usize) -> Self {
+            let mut by_idx = Vec::with_capacity(height);
+            let mut by_id = std::collections::HashMap::with_capacity(height);
+            for idx in 0..height {
+                let id = aksel::interaction::Id::unique();
+                by_idx.push(id.clone());
+                by_id.insert(id, idx);
+            }
+
+            Self { by_idx, by_id }
+        }
+
+        pub fn get_by_idx(&self, idx: usize) -> Option<aksel::interaction::Id> {
+            self.by_idx.get(idx).cloned()
+        }
+
+        pub fn get_by_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
+            self.by_id.get(id).cloned()
+        }
+
+        pub fn iter_idx(&self) -> impl Iterator<Item = &aksel::interaction::Id> {
+            self.by_idx.iter()
+        }
+    }
 
     pub struct State {
         pub(super) df: pl::DataFrame,
         pub(super) x_axis: super::XAxis,
         pub(super) y_axes: Vec<super::YAxis>,
-        hovered_id: Option<aksel::interaction::Id>,
+        points: Points,
+        pub(super) hovered_id: Option<aksel::interaction::Id>,
+        pub(super) selected_id: Option<aksel::interaction::Id>,
     }
 
     impl State {
         pub fn new(df: pl::DataFrame, x_axis: super::XAxis, y_axes: Vec<super::YAxis>) -> Self {
+            let points = Points::new(df.height());
             Self {
                 df,
                 x_axis,
                 y_axes,
+                points,
                 hovered_id: Default::default(),
+                selected_id: Default::default(),
             }
         }
 
@@ -706,6 +808,35 @@ mod data {
 
         pub fn y_axis_mut(&mut self, axis: super::YAxisId) -> Option<&mut super::YAxis> {
             self.y_axes.iter_mut().find(|ax| ax.id == axis)
+        }
+
+        pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
+            self.points.get_by_id(id)
+        }
+    }
+
+    impl State {
+        pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+            match message {
+                Message::ChartDragged(_) => unreachable!("handled elsewhere"),
+                Message::ChartScrolled(_) => unreachable!("handled elsewhere"),
+                Message::BackgroundHovered => {
+                    self.hovered_id = None;
+                    iced::Task::none()
+                }
+                Message::BackgroundPressed => {
+                    self.selected_id = None;
+                    iced::Task::none()
+                }
+                Message::PointHovered {
+                    point,
+                    modifiers: _,
+                } => {
+                    let _ = self.hovered_id.insert(point);
+                    iced::Task::none()
+                }
+                Message::PointMouseDown { point, event } => iced::Task::none(),
+            }
         }
     }
 
@@ -724,23 +855,17 @@ mod data {
             let num_traces = axis.traces.len();
             assert_ne!(num_traces, 0, "axis traces must not be empty");
 
-            let [r, g, b, a] = base_color.into_linear();
-            let base_color_lch: palette::oklch::Oklcha =
-                palette::rgb::Srgba::<f32>::from_linear(palette::LinSrgba::new(r, g, b, a))
-                    .into_color();
-
+            let base_color_lch = color_to_lch(base_color);
             let trace_color_shift = 180.0 / num_traces as f32;
             for (idx, trace) in axis.traces.iter().enumerate() {
                 let trace_color = base_color_lch
                     .clone()
                     .shift_hue(trace_color_shift * idx as f32);
 
-                let color = match trace.color() {
+                let mut colors = match trace.color() {
                     trace::Color::Default => {
-                        let color: palette::LinSrgba = trace_color.into_color();
-                        let (r, g, b, a) = color.into_components();
-                        let color = iced::Color::from_linear_rgba(r, g, b, a);
-                        TraceColor::Single(color)
+                        let color = lch_to_color(trace_color);
+                        vec![color; self.df.height()]
                     }
                     trace::Color::Column(column) => {
                         let colors = self.df.column(column).unwrap();
@@ -748,30 +873,32 @@ mod data {
                         let colors = super::column_to_values_f64(colors);
 
                         let range = max - min;
-                        let colors = colors
+                        colors
                             .into_iter()
                             .map(|value| (value - min) / range)
                             .map(|shift| trace_color.shift_hue(shift as f32 * 180.0))
-                            .map(|color| {
-                                let color: palette::LinSrgba = color.into_color();
-                                let (r, g, b, a) = color.into_components();
-                                iced::Color::from_linear_rgba(r, g, b, a)
-                            })
-                            .collect::<Vec<_>>();
-
-                        TraceColor::List(colors)
+                            .map(lch_to_color)
+                            .collect::<Vec<_>>()
                     }
                     trace::Color::Custom(_) => todo!(),
                 };
 
-                self.draw_trace(plot, color, trace);
+                if let Some(id) = &self.hovered_id {
+                    let idx = self.points.get_by_id(id).expect("point should exist");
+                    let color = colors.get_mut(idx).expect("color should exist");
+                    let lch = color_to_lch(color.clone());
+                    let lch = lch.shift_hue(120.0);
+                    *color = lch_to_color(lch);
+                }
+
+                self.draw_trace(plot, colors, trace);
             }
         }
 
         fn draw_trace(
             &self,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
-            color: TraceColor,
+            colors: Vec<iced::Color>,
             trace: &trace::Trace,
         ) {
             let column_label = trace.column();
@@ -788,41 +915,82 @@ mod data {
                     .collect::<Vec<_>>(),
             };
 
-            let colors = match color {
-                TraceColor::Single(color) => vec![color; self.df.height()],
-                TraceColor::List(colors) => colors,
-            };
+            let mut hovered = None;
+            let points = itertools::izip!(self.points.iter_idx(), x, y, colors);
+            for (iid, x, y, color) in points {
+                if let Some(hovered_id) = &self.hovered_id {
+                    if iid == hovered_id {
+                        let _ = hovered.insert((iid, x, y, color));
+                        continue;
+                    }
+                }
+                Self::draw_point(plot, trace.marker(), iid, x, y, color, trace.marker_size());
+            }
 
-            let points = itertools::izip!(x, y, colors);
-            for (x, y, color) in points {
-                let shape_id = match trace.marker() {
-                    trace::Marker::Circle => {
-                        let shape = aksel::shape::Ellipse::circle(
-                            aksel::PlotPoint::new(x, y),
-                            aksel::Measure::Screen(trace.marker_size()),
-                        )
-                        .fill(color);
-                        plot.render(shape);
-                    }
-                    trace::Marker::Square => {
-                        let shape = aksel::shape::Rectangle::centered(
-                            aksel::PlotPoint::new(x, y),
-                            aksel::Measure::Screen(trace.marker_size()),
-                            aksel::Measure::Screen(trace.marker_size()),
-                        )
-                        .fill(color);
-                        plot.render(shape);
-                    }
-                    trace::Marker::Triangle => {
-                        let shape = aksel::shape::Triangle::centered(
-                            aksel::PlotPoint::new(x, y),
-                            aksel::Measure::Screen(trace.marker_size()),
-                            aksel::Measure::Screen(trace.marker_size()),
-                        )
-                        .fill(color);
-                        plot.render(shape);
-                    }
-                };
+            if let Some((id, x, y, color)) = hovered {
+                Self::draw_point(plot, trace.marker(), id, x, y, color, trace.marker_size());
+            }
+        }
+
+        #[inline]
+        fn draw_point(
+            plot: &mut aksel::Plot<super::PlotValue, Message>,
+            marker: trace::Marker,
+            id: &aksel::interaction::Id,
+            x: super::PlotValue,
+            y: super::PlotValue,
+            color: iced::Color,
+            marker_size: super::trace::MarkerSize,
+        ) {
+            let marker_size = aksel::Measure::Screen(marker_size);
+            match marker {
+                trace::Marker::Circle => {
+                    let shape = aksel::shape::Ellipse::circle(
+                        aksel::PlotPoint::new(x, y),
+                        marker_size.clone(),
+                    )
+                    .fill(color);
+
+                    plot.add_interaction(
+                        aksel::Interaction::new(id.clone(), &shape)
+                            .on_hover(|point, modifiers| Message::PointHovered { point, modifiers })
+                            .on_press(|point, event| Message::PointMouseDown { point, event }),
+                    );
+
+                    plot.render(shape);
+                }
+                trace::Marker::Square => {
+                    let shape = aksel::shape::Rectangle::centered(
+                        aksel::PlotPoint::new(x, y),
+                        marker_size.clone(),
+                        marker_size.clone(),
+                    )
+                    .fill(color);
+
+                    plot.add_interaction(
+                        aksel::Interaction::new(id.clone(), &shape)
+                            .on_hover(|point, modifiers| Message::PointHovered { point, modifiers })
+                            .on_press(|point, event| Message::PointMouseDown { point, event }),
+                    );
+
+                    plot.render(shape);
+                }
+                trace::Marker::Triangle => {
+                    let shape = aksel::shape::Triangle::centered(
+                        aksel::PlotPoint::new(x, y),
+                        marker_size.clone(),
+                        marker_size.clone(),
+                    )
+                    .fill(color);
+
+                    plot.add_interaction(
+                        aksel::Interaction::new(id.clone(), &shape)
+                            .on_hover(|point, modifiers| Message::PointHovered { point, modifiers })
+                            .on_press(|point, event| Message::PointMouseDown { point, event }),
+                    );
+
+                    plot.render(shape);
+                }
             }
         }
     }
@@ -862,6 +1030,7 @@ fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     }
 }
 
+#[inline]
 fn y_axis_to_aksel(axis: &YAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     let (min, max) = axis.traces.minmax_f64(df);
     match axis.scale {
@@ -870,6 +1039,7 @@ fn y_axis_to_aksel(axis: &YAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     }
 }
 
+#[inline]
 fn column_minmax_f64(column: &pl::Column) -> (f64, f64) {
     let values = column.as_series().unwrap();
     match column.dtype() {
@@ -887,6 +1057,7 @@ fn column_minmax_f64(column: &pl::Column) -> (f64, f64) {
     }
 }
 
+#[inline]
 fn column_to_values_f64(column: &pl::Column) -> Vec<f64> {
     match column.dtype() {
         pl::DataType::Float64 => column
@@ -902,4 +1073,18 @@ fn column_to_values_f64(column: &pl::Column) -> Vec<f64> {
             .collect::<Vec<_>>(),
         _ => todo!(),
     }
+}
+
+#[inline]
+fn color_to_lch(color: iced::Color) -> palette::Oklch<f32> {
+    let [r, g, b, a] = color.into_linear();
+
+    palette::rgb::Srgba::<f32>::from_linear(palette::LinSrgba::new(r, g, b, a)).into_color()
+}
+
+#[inline]
+fn lch_to_color(lch: palette::Oklch<f32>) -> iced::Color {
+    let color: palette::LinSrgba = lch.into_color();
+    let (r, g, b, a) = color.into_components();
+    iced::Color::from_linear_rgba(r, g, b, a)
 }

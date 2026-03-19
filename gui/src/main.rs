@@ -160,10 +160,12 @@ impl App {
             Some(WindowKind::Dataset(path))
             | Some(WindowKind::DatasetChild { dataset: path, .. }) => {
                 let dataset = self.datasets.get(path).expect("dataset should exist");
-                dataset.view(&window).map(move |msg| Message::Dataset {
-                    id: path.clone(),
-                    message: msg,
-                })
+                dataset
+                    .view(&self.theme, &window)
+                    .map(move |msg| Message::Dataset {
+                        id: path.clone(),
+                        message: msg,
+                    })
             }
             None => iced::widget::container(iced::widget::Space::new()).into(),
         }

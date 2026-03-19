@@ -2109,7 +2109,7 @@ dependencies = [
 [[package]]
 name = "iced_aksel"
 version = "0.2.0"
-source = "git+https://github.com/QuistHQ/iced_aksel?branch=shape-interactivity#bad5dfb189b2e6a8938b97786540ef68093eab2d"
+source = "git+https://github.com/QuistHQ/iced_aksel?branch=shape-interactivity#599b567808dc7397a15b49c3d7ef16bada9de6da"
 dependencies = [
  "aksel",
  "derivative",
