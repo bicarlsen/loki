@@ -274,7 +274,7 @@ impl State {
         let mut tasks = Vec::new();
 
         let data = self.data.edit();
-        data.df = dataframe;
+        data.update_dataframe(dataframe);
         let columns = data
             .df
             .schema()
@@ -368,6 +368,16 @@ impl State {
 impl State {
     pub fn view(&self) -> iced::Element<'_, Message> {
         let plot = aksel::Chart::new(&self.chart)
+            .marker(
+                &X_AXIS_ID,
+                aksel::axis::MarkerPosition::Cursor,
+                axis_renderer_marker,
+            )
+            .marker(
+                &Y_AXIS_IDS[0],
+                aksel::axis::MarkerPosition::Cursor,
+                axis_renderer_marker,
+            )
             .plot_data(self.data.get(), X_AXIS_ID, Y_AXIS_IDS[0])
             .on_hover(|_| data::Message::BackgroundHovered)
             .on_press(|event: aksel::PressEvent<iced::Point>| {
@@ -427,6 +437,30 @@ impl State {
         let pl_xaxis = iced::widget::row![iced::widget::text("x-axis"), pl_xaxis].into();
 
         iced::widget::column(std::iter::once(pl_xaxis).chain(yaxis_groups)).into()
+    }
+}
+
+fn axis_renderer_marker(ctx: aksel::axis::MarkerContext<PlotValue>) -> Option<aksel::axis::Marker> {
+    if !ctx.cursor_on_plot && !ctx.cursor_on_axis {
+        return None;
+    }
+
+    Some(ctx.marker(format!("{:.02e}", ctx.value)))
+}
+
+fn axis_renderer_ticks()
+-> impl Fn(aksel::axis::TickContext<PlotValue>) -> aksel::axis::TickResult + 'static {
+    move |ctx: aksel::axis::TickContext<PlotValue>| {
+        let text = format!("{:.02e}", ctx.tick.value);
+        let label = ctx.label(text);
+
+        aksel::axis::TickResult {
+            label: Some(label),
+            label_badge: Some(ctx.label_badge()),
+            tick_line: Some(ctx.tickline()),
+            grid_line: Some(ctx.gridline()),
+            label_priority: None,
+        }
     }
 }
 
@@ -726,11 +760,10 @@ mod trace {
 }
 
 pub(super) mod data {
-    use crate::dataset::plot::{color_to_lch, lch_to_color};
-
     use super::trace;
+    use crate::dataset::plot::{color_to_lch, lch_to_color};
     use iced_aksel as aksel;
-    use palette::ShiftHue;
+    use palette::{IntoColor, ShiftHue, convert::IntoColorUnclamped};
     use polars::prelude as pl;
 
     #[derive(Debug, Clone)]
@@ -778,6 +811,11 @@ pub(super) mod data {
         pub fn iter_idx(&self) -> impl Iterator<Item = &aksel::interaction::Id> {
             self.by_idx.iter()
         }
+
+        pub fn clear(&mut self) {
+            self.by_id.clear();
+            self.by_idx.clear();
+        }
     }
 
     pub struct State {
@@ -813,6 +851,13 @@ pub(super) mod data {
         pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
             self.points.get_by_id(id)
         }
+
+        pub fn update_dataframe(&mut self, dataframe: pl::DataFrame) {
+            let _ = self.hovered_id.take();
+            let _ = self.selected_id.take();
+            self.points = Points::new(dataframe.height());
+            self.df = dataframe;
+        }
     }
 
     impl State {
@@ -838,11 +883,6 @@ pub(super) mod data {
                 Message::PointMouseDown { point, event } => iced::Task::none(),
             }
         }
-    }
-
-    enum TraceColor {
-        Single(iced::Color),
-        List(Vec<iced::Color>),
     }
 
     impl State {
@@ -873,12 +913,23 @@ pub(super) mod data {
                         let colors = super::column_to_values_f64(colors);
 
                         let range = max - min;
-                        colors
-                            .into_iter()
-                            .map(|value| (value - min) / range)
-                            .map(|shift| trace_color.shift_hue(shift as f32 * 180.0))
-                            .map(lch_to_color)
-                            .collect::<Vec<_>>()
+                        if approx::abs_diff_eq!(range, 0.0) {
+                            let color = lch_to_color(trace_color);
+                            vec![color; self.df.height()]
+                        } else {
+                            colors
+                                .into_iter()
+                                .map(|value| (value - min) / range)
+                                .map(|value| {
+                                    if value.is_nan() {
+                                        palette::Oklch::from_components((0.0, 0.0, 0.0))
+                                    } else {
+                                        trace_color.shift_hue(value as f32 * 180.0)
+                                    }
+                                })
+                                .map(lch_to_color)
+                                .collect::<Vec<_>>()
+                        }
                     }
                     trace::Color::Custom(_) => todo!(),
                 };
@@ -1016,15 +1067,18 @@ fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
         XAxisValues::Index => aksel::Axis::new(
             aksel::scale::Linear::new(0.0, df.height() as PlotValue),
             POSITION,
-        ),
+        )
+        .with_tick_renderer(axis_renderer_ticks()),
         XAxisValues::Series(name) => {
             let column = df.column(name).unwrap();
             let (min, max) = column_minmax_f64(column);
             match axis.scale {
                 AxisScale::Linear => {
                     aksel::Axis::new(aksel::scale::Linear::new(min, max), POSITION)
+                        .with_tick_renderer(axis_renderer_ticks())
                 }
-                AxisScale::Log => aksel::Axis::new(aksel::scale::Linear::new(min, max), POSITION),
+                AxisScale::Log => aksel::Axis::new(aksel::scale::Linear::new(min, max), POSITION)
+                    .with_tick_renderer(axis_renderer_ticks()),
             }
         }
     }
@@ -1034,8 +1088,11 @@ fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
 fn y_axis_to_aksel(axis: &YAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     let (min, max) = axis.traces.minmax_f64(df);
     match axis.scale {
-        AxisScale::Linear => aksel::Axis::new(aksel::scale::Linear::new(min, max), axis.position),
-        AxisScale::Log => aksel::Axis::new(aksel::scale::Linear::new(min, max), axis.position),
+        AxisScale::Linear => aksel::Axis::new(aksel::scale::Linear::new(min, max), axis.position)
+            .with_tick_renderer(axis_renderer_ticks()),
+
+        AxisScale::Log => aksel::Axis::new(aksel::scale::Linear::new(min, max), axis.position)
+            .with_tick_renderer(axis_renderer_ticks()),
     }
 }
 
@@ -1052,6 +1109,16 @@ fn column_minmax_f64(column: &pl::Column) -> (f64, f64) {
             let min = values.min::<f64>().unwrap().unwrap();
             let max = values.max::<f64>().unwrap().unwrap();
             (min, max)
+        }
+        pl::DataType::Int64 => {
+            let min = values.min::<i64>().unwrap().unwrap();
+            let max = values.max::<i64>().unwrap().unwrap();
+            (min as f64, max as f64)
+        }
+        pl::DataType::Int128 => {
+            let min = values.min::<i128>().unwrap().unwrap();
+            let max = values.max::<i128>().unwrap().unwrap();
+            (min as f64, max as f64)
         }
         _ => todo!(),
     }

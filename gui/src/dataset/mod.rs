@@ -393,10 +393,12 @@ mod data_table {
                                 text("false")
                             }
                         }
-                        pl::AnyValue::Float64(value) => text(format!("{value:?}")),
                         pl::AnyValue::String(value) => text(value),
+                        pl::AnyValue::Float64(value) => text(format!("{value:?}")),
                         pl::AnyValue::UInt8(value) => text(format!("{value:?}")),
-                        _ => todo!(),
+                        pl::AnyValue::Int64(value) => text(format!("{value:?}")),
+                        pl::AnyValue::Int128(value) => text(format!("{value:?}")),
+                        value => todo!("display {value:?}"),
                     };
                     if let Some(highlight) = &self.highlight {
                         if idx == *highlight {
