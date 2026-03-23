@@ -207,7 +207,7 @@ impl State {
             Message::UpdateXAxisValues(value) => self.update_x_axis_values(value),
             Message::XAxisValuesUpdated => self.rescale_xaxis(),
             Message::TraceGroup { axis, message } => self.update_trace_group(axis, message),
-            Message::DataframeChange(dataframe) => self.dataframe_changed(dataframe),
+            Message::DataframeChange(dataframe) => self.dataframe_change(dataframe),
             Message::Data(message) => self.update_data(message),
         }
     }
@@ -270,7 +270,7 @@ impl State {
         }
     }
 
-    fn dataframe_changed(&mut self, dataframe: pl::DataFrame) -> iced::Task<Message> {
+    fn dataframe_change(&mut self, dataframe: pl::DataFrame) -> iced::Task<Message> {
         let mut tasks = Vec::new();
 
         let data = self.data.edit();
@@ -281,6 +281,7 @@ impl State {
             .iter_names()
             .map(|name| name.to_string())
             .collect::<Vec<_>>();
+
         if let XAxisValues::Series(label) = &data.x_axis.values {
             if !columns.contains(label) {
                 if let XAxisValues::Series(default) = &self.options.x_axis.values {
@@ -288,27 +289,16 @@ impl State {
                 } else {
                     data.x_axis.values.take();
                 }
-                tasks.push(iced::Task::done(Message::XAxisValuesUpdated))
             }
         }
+        tasks.push(iced::Task::done(Message::XAxisValuesUpdated));
 
         for axis in data.y_axes.iter_mut() {
             let removed = axis
                 .traces
                 .extract_if(.., |trace| !columns.contains(trace.column()))
                 .collect::<Vec<_>>();
-            if removed.len() > 0 {
-                tasks.extend([
-                    iced::Task::done(Message::TraceGroup {
-                        axis: axis.id,
-                        message: trace::GroupMessage::TracesUpdated,
-                    }),
-                    iced::Task::done(Message::TraceGroup {
-                        axis: axis.id,
-                        message: trace::GroupMessage::BoundsChanged,
-                    }),
-                ]);
-            }
+
             if axis.traces.len() == 0 {
                 let mut add = vec![];
                 if let Some(default) = self.options.y_axes.iter().find(|ax| ax.id == axis.id) {
@@ -324,6 +314,17 @@ impl State {
                     axis.traces.extend(add);
                 }
             }
+
+            tasks.extend([
+                iced::Task::done(Message::TraceGroup {
+                    axis: axis.id,
+                    message: trace::GroupMessage::TracesUpdated,
+                }),
+                iced::Task::done(Message::TraceGroup {
+                    axis: axis.id,
+                    message: trace::GroupMessage::BoundsChanged,
+                }),
+            ]);
         }
 
         iced::Task::batch(tasks)
