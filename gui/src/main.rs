@@ -33,7 +33,9 @@ enum Message {
         id: PathBuf,
         message: dataset::Message,
     },
+    #[from]
     DataServer(data_server::Message),
+    #[from]
     DataServerUpdate(data_server::Update),
     /// A new window opened.
     WindowOpened {
@@ -62,6 +64,8 @@ enum Message {
         error: String,
     },
     DatasetLastWindowClosed(PathBuf),
+    /// Clear all datasets.
+    Clear,
     AppClosed,
 }
 
@@ -151,6 +155,7 @@ impl App {
                     .expect("dataset should exist");
                 iced::Task::done(workspace::Message::DatasetClosed { path: dataset }.into())
             }
+            Message::Clear => self.clear_datasets(),
         }
     }
 
@@ -188,9 +193,92 @@ impl App {
             workspace::Message::DatasetDirPathSelected(path) => {
                 iced::Task::done(Message::OpenDatasetDirPath(path))
             }
-
+            #[cfg(feature = "project")]
+            workspace::Message::RequestSaveProject => self.request_save_project(),
+            #[cfg(feature = "project")]
+            workspace::Message::RequestOpenProject => self.request_open_project(),
             _ => self.workspace.update(message).map(Message::Workspace),
         }
+    }
+
+    #[cfg(feature = "project")]
+    fn request_save_project(&self) -> iced::Task<Message> {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("loki", &[project::FILE_EXT])
+            .save_file()
+        else {
+            return iced::Task::none();
+        };
+
+        self.save_as_project(path)
+    }
+
+    #[cfg(feature = "project")]
+    fn save_as_project(&self, path: PathBuf) -> iced::Task<Message> {
+        let state = project::State::new(self);
+        match state.save(&path) {
+            Ok(_) => iced::Task::none(),
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::error!(?err);
+
+                todo!("could not save project: {err:?}")
+            }
+        }
+    }
+
+    #[cfg(feature = "project")]
+    fn request_open_project(&mut self) -> iced::Task<Message> {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("loki", &[project::FILE_EXT])
+            .pick_file()
+        else {
+            return iced::Task::none();
+        };
+
+        self.open_project(path)
+    }
+
+    #[cfg(feature = "project")]
+    fn open_project(&mut self, path: PathBuf) -> iced::Task<Message> {
+        match project::State::from_file(&path) {
+            Ok(project) => self.clear_datasets().chain(self.load_project(&project)),
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::error!(?err);
+
+                todo!("could not load project: {err:?}");
+            }
+        }
+    }
+
+    #[cfg(feature = "project")]
+    fn load_project(&mut self, project: &project::State) -> iced::Task<Message> {
+        let tasks = project.datasets.iter().map(|dataset| {
+            if dataset.path.is_file() {
+                self.open_dataset_file_path(&dataset.path)
+            } else if dataset.path.is_dir() {
+                self.open_dataset_dir_path(&dataset.path)
+            } else if !dataset.path.exists() {
+                iced::Task::done(
+                    workspace::Message::DatasetError {
+                        path: dataset.path.clone(),
+                        error: "does not exist".to_string(),
+                    }
+                    .into(),
+                )
+            } else {
+                iced::Task::done(
+                    workspace::Message::DatasetError {
+                        path: dataset.path.clone(),
+                        error: "unknown".to_string(),
+                    }
+                    .into(),
+                )
+            }
+        });
+
+        iced::Task::batch(tasks)
     }
 
     fn dataset_message(&mut self, id: PathBuf, message: dataset::Message) -> iced::Task<Message> {
@@ -304,28 +392,27 @@ impl App {
         let focus = iced::window::gain_focus(id);
         let task = match &kind {
             WindowKind::Workspace => focus,
-            WindowKind::Dataset(path) => focus.map({
-                let path = path.clone();
-                let window = id.clone();
-                move |msg| {
-                    Message::Workspace(workspace::Message::DatasetWindowOpened {
-                        path: path.clone(),
-                        window,
-                    })
-                }
-            }),
-            WindowKind::DatasetChild { dataset, kind } => focus.map({
-                let path = dataset.clone();
-                let window = id.clone();
-                let kind = kind.clone();
-                move |msg| {
-                    Message::Workspace(workspace::Message::DatasetChildWindowOpened {
-                        path: path.clone(),
-                        window,
-                        kind: kind,
-                    })
-                }
-            }),
+            WindowKind::Dataset(path) => {
+                let workspace_task =
+                    self.workspace
+                        .update(workspace::Message::DatasetWindowOpened {
+                            path: path.clone(),
+                            window: id.clone(),
+                        });
+
+                focus.chain(workspace_task.map(Message::Workspace))
+            }
+            WindowKind::DatasetChild { dataset, kind } => {
+                let workspace_task =
+                    self.workspace
+                        .update(workspace::Message::DatasetChildWindowOpened {
+                            path: dataset.clone(),
+                            window: id.clone(),
+                            kind: kind.clone(),
+                        });
+
+                focus.chain(workspace_task.map(Message::Workspace))
+            }
         };
         self.windows.insert(id, kind);
         task
@@ -377,6 +464,7 @@ impl App {
                 }
 
                 let dataset_msg = match kind {
+                    dataset::ChildWindowType::Settings => dataset::Message::SettingsClosed,
                     dataset::ChildWindowType::DataTable => dataset::Message::DataTableClosed,
                     dataset::ChildWindowType::Pipeline => dataset::Message::PipelineClosed,
                     dataset::ChildWindowType::FileBrowser => dataset::Message::FilesBrowserClosed,
@@ -406,7 +494,7 @@ impl App {
     fn open_dataset_file_path(&mut self, path: impl AsRef<Path>) -> iced::Task<Message> {
         let path = path.as_ref();
         if let Some(dataset) = self.datasets.get(path) {
-            todo!("focus dataset");
+            return iced::window::gain_focus(dataset.window_id().clone());
         }
 
         iced::Task::batch([
@@ -518,6 +606,19 @@ impl App {
 
         Task::batch([open, loaded])
     }
+
+    fn clear_datasets(&mut self) -> iced::Task<Message> {
+        let mut tasks = Vec::with_capacity(self.windows.len());
+        for (id, kind) in self.windows.iter() {
+            if matches!(kind, WindowKind::Workspace) {
+                continue;
+            }
+
+            tasks.push(iced::window::close(id.clone()))
+        }
+
+        iced::Task::batch(tasks)
+    }
 }
 
 impl App {
@@ -559,6 +660,91 @@ impl App {
                 panic!("directory should not be identified as single dataset type")
             }
         }
+    }
+}
+
+#[cfg(feature = "project")]
+impl Into<project::State> for &App {
+    fn into(self) -> project::State {
+        let datasets = self
+            .datasets
+            .iter()
+            .map(|(path, dataset)| {
+                let workspace_dataset = self.workspace.get(path).expect("dataset should exist");
+                let children = dataset.children();
+                let windows = project::Windows {
+                    main: self.windows.get(dataset.window_id()).is_some(),
+                    data_table: children.data_table.is_some(),
+                    pipeline: children.pipeline.is_some(),
+                    file_browser: children.files_browser.is_some(),
+                };
+
+                project::Dataset {
+                    path: path.clone(),
+                    label: workspace_dataset.label().cloned(),
+                    windows,
+                }
+            })
+            .collect();
+
+        project::State { datasets }
+    }
+}
+
+#[cfg(feature = "project")]
+mod project {
+    use std::{
+        fs,
+        io::{self, Read, Write},
+        path::{Path, PathBuf},
+    };
+
+    pub const FILE_EXT: &str = "loki";
+
+    #[derive(Default, serde::Serialize, serde::Deserialize)]
+    pub(crate) struct Windows {
+        pub(crate) main: bool,
+        pub(crate) data_table: bool,
+        pub(crate) pipeline: bool,
+        pub(crate) file_browser: bool,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub(crate) struct Dataset {
+        pub(crate) path: PathBuf,
+        pub(crate) label: Option<String>,
+        pub(crate) windows: Windows,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub(crate) struct State {
+        pub(crate) datasets: Vec<Dataset>,
+    }
+
+    impl State {
+        pub fn new(app: &super::App) -> Self {
+            app.into()
+        }
+
+        pub fn from_file(path: impl AsRef<Path>) -> Result<Self, LoadError> {
+            let mut file = fs::File::open(path)?;
+            let mut content = String::new();
+            file.read_to_string(&mut content)?;
+            toml::from_str(&content).map_err(|err| err.into())
+        }
+
+        pub fn save(&self, path: impl AsRef<Path>) -> Result<(), io::Error> {
+            let mut file = fs::File::create(path)?;
+
+            let content = toml::to_string(&self).expect("valid toml");
+            file.write_all(content.as_bytes())
+        }
+    }
+
+    #[derive(Debug, derive_more::From)]
+    pub enum LoadError {
+        Io(io::Error),
+        Serde(toml::de::Error),
     }
 }
 

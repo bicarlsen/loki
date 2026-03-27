@@ -1,41 +1,8 @@
 //! Workspace.
 use super::dataset;
 use crate::icon;
-use iced::advanced::graphics::core::window;
 use jpk_reader as jpk;
 use std::path::{Path, PathBuf};
-
-pub enum DatasetState {
-    Ok,
-    Err(String),
-    Loading,
-}
-
-#[derive(Default)]
-struct DatasetChildren {
-    data_table: Option<iced::window::Id>,
-    pipeline: Option<iced::window::Id>,
-    file_browser: Option<iced::window::Id>,
-}
-
-impl DatasetChildren {
-    pub fn take_child(&mut self, kind: dataset::ChildWindowType) -> Option<iced::window::Id> {
-        match kind {
-            dataset::ChildWindowType::DataTable => self.data_table.take(),
-            dataset::ChildWindowType::Pipeline => self.pipeline.take(),
-            dataset::ChildWindowType::FileBrowser => self.file_browser.take(),
-        }
-    }
-}
-
-struct Dataset {
-    path: PathBuf,
-    label: Option<String>,
-    data: DatasetState,
-    kind: Option<jpk::dataset::DatasetType>,
-    window: Option<iced::window::Id>,
-    children: DatasetChildren,
-}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -83,6 +50,50 @@ pub enum Message {
     },
     OpenOrFocusDataset(PathBuf),
     FocusWindow(iced::window::Id),
+    #[cfg(feature = "project")]
+    RequestSaveProject,
+    #[cfg(feature = "project")]
+    RequestOpenProject,
+}
+
+pub enum DatasetState {
+    Ok,
+    Err(String),
+    Loading,
+}
+
+#[derive(Default)]
+struct DatasetChildren {
+    settings: Option<iced::window::Id>,
+    data_table: Option<iced::window::Id>,
+    pipeline: Option<iced::window::Id>,
+    file_browser: Option<iced::window::Id>,
+}
+
+impl DatasetChildren {
+    pub fn take_child(&mut self, kind: dataset::ChildWindowType) -> Option<iced::window::Id> {
+        match kind {
+            dataset::ChildWindowType::Settings => self.settings.take(),
+            dataset::ChildWindowType::DataTable => self.data_table.take(),
+            dataset::ChildWindowType::Pipeline => self.pipeline.take(),
+            dataset::ChildWindowType::FileBrowser => self.file_browser.take(),
+        }
+    }
+}
+
+pub struct Dataset {
+    path: PathBuf,
+    label: Option<String>,
+    data: DatasetState,
+    kind: Option<jpk::dataset::DatasetType>,
+    window: Option<iced::window::Id>,
+    children: DatasetChildren,
+}
+
+impl Dataset {
+    pub fn label(&self) -> Option<&String> {
+        self.label.as_ref()
+    }
 }
 
 pub(crate) struct Workspace {
@@ -103,11 +114,26 @@ impl Workspace {
     pub fn title(&self, window: iced::window::Id) -> String {
         self._title.clone()
     }
+
+    pub fn get(&self, dataset: impl AsRef<Path>) -> Option<&Dataset> {
+        self.datasets.iter().find(|ds| ds.path == dataset.as_ref())
+    }
+
+    fn clear(&mut self) {
+        self.datasets.clear();
+    }
 }
 
 impl Workspace {
     pub fn new() -> (Self, iced::Task<Message>) {
-        let (_, open) = iced::window::open(window::Settings::default());
+        let settings = iced::window::Settings {
+            size: iced::Size {
+                width: 300.0,
+                height: 600.0,
+            },
+            ..Default::default()
+        };
+        let (_, open) = iced::window::open(settings);
 
         (Self::default(), open.map(Message::WorkspaceOpened))
     }
@@ -134,17 +160,38 @@ impl Workspace {
             Message::DatasetError { path, error } => self.dataset_error(path, error),
             Message::DatasetClosed { path } => self.dataset_closed(path),
             Message::OpenOrFocusDataset(dataset) => {
-                todo!()
+                if let Some(dataset) = self.get(dataset) {
+                    if let Some(id) = dataset.window.as_ref() {
+                        iced::window::gain_focus(id.clone())
+                    } else {
+                        todo!();
+                    }
+                } else {
+                    todo!();
+                }
             }
             Message::FocusWindow(id) => iced::window::gain_focus::<Message>(id).discard(),
+            #[cfg(feature = "project")]
+            Message::RequestSaveProject => iced::Task::none(),
+            #[cfg(feature = "project")]
+            Message::RequestOpenProject => iced::Task::none(),
         }
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
+        let menu = iced_aw::menu_bar!((
+            iced::widget::button("File"),
+            #[cfg(feature = "project")]
+            iced_aw::Menu::new(iced_aw::menu_items!(
+                (iced::widget::button("Save project").on_press(Message::RequestSaveProject)),
+                (iced::widget::button("Open project").on_press(Message::RequestOpenProject))
+            ))
+        ));
+
         let btn_open_dataset_file =
             iced::widget::button(icon::file()).on_press(Message::PromptOpenDatasetFile);
         let btn_open_dataset_dir =
-            iced::widget::button(icon::opendir()).on_press(Message::PromptOpenDatasetDir);
+            iced::widget::button(icon::folder()).on_press(Message::PromptOpenDatasetDir);
         let dataset_commands = iced::widget::column![iced::widget::row![
             btn_open_dataset_file,
             btn_open_dataset_dir
@@ -179,6 +226,11 @@ impl Workspace {
             let btn_dataset = iced::widget::button(iced::widget::text(label))
                 .on_press(Message::OpenOrFocusDataset(dataset.path.clone()));
 
+            let child_settings = dataset.children.settings.as_ref().map(|window| {
+                iced::widget::button(iced::widget::text("Settings"))
+                    .on_press(Message::FocusWindow(window.clone()))
+            });
+
             let child_data_table = dataset.children.data_table.as_ref().map(|window| {
                 iced::widget::button(iced::widget::text("Data table"))
                     .on_press(Message::FocusWindow(window.clone()))
@@ -196,12 +248,17 @@ impl Workspace {
 
             let children = iced::widget::row![
                 iced::widget::space().width(iced::Length::Fixed(20.0)),
-                iced::widget::column![child_data_table, child_pipelines, child_file_browser,]
+                iced::widget::column![
+                    child_settings,
+                    child_data_table,
+                    child_pipelines,
+                    child_file_browser,
+                ]
             ];
             iced::widget::column![btn_dataset, children].into()
         }));
 
-        iced::widget::column![dataset_commands, dataset_list].into()
+        iced::widget::column![menu, dataset_commands, dataset_list].into()
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
@@ -299,26 +356,33 @@ impl Workspace {
             .expect("dataset should exist");
 
         match kind {
+            dataset::ChildWindowType::Settings => {
+                assert!(
+                    dataset.children.settings.is_none(),
+                    "settings should not exist"
+                );
+                dataset.children.settings = Some(window);
+            }
             dataset::ChildWindowType::DataTable => {
                 assert!(
                     dataset.children.data_table.is_none(),
-                    "data table already exists"
+                    "data table should not exist"
                 );
-                let _ = dataset.children.data_table.insert(window);
+                dataset.children.data_table = Some(window);
             }
             dataset::ChildWindowType::Pipeline => {
                 assert!(
                     dataset.children.pipeline.is_none(),
-                    "pipeline already exists"
+                    "pipeline should not exist"
                 );
-                let _ = dataset.children.pipeline.insert(window);
+                dataset.children.pipeline = Some(window);
             }
             dataset::ChildWindowType::FileBrowser => {
                 assert!(
                     dataset.children.file_browser.is_none(),
-                    "file browser already exists"
+                    "file browser should not exist"
                 );
-                let _ = dataset.children.file_browser.insert(window);
+                dataset.children.file_browser = Some(window);
             }
         }
         iced::Task::none()

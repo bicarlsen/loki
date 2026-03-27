@@ -2,7 +2,6 @@
 use iced_aksel as aksel;
 use palette::IntoColor;
 use polars::prelude::{self as pl};
-use std::collections::HashMap;
 
 type PlotValue = f64;
 pub type YAxisId = u8;
@@ -294,10 +293,15 @@ impl State {
         tasks.push(iced::Task::done(Message::XAxisValuesUpdated));
 
         for axis in data.y_axes.iter_mut() {
-            let removed = axis
-                .traces
-                .extract_if(.., |trace| !columns.contains(trace.column()))
-                .collect::<Vec<_>>();
+            axis.traces.retain(|trace| columns.contains(trace.column()));
+
+            for trace in axis.traces.iter_mut() {
+                if let trace::Color::Column(column) = trace.color() {
+                    if !columns.contains(column) {
+                        trace.set_color(trace::Color::Default);
+                    }
+                }
+            }
 
             if axis.traces.len() == 0 {
                 let mut add = vec![];
@@ -380,11 +384,6 @@ impl State {
                 axis_renderer_marker,
             )
             .plot_data(self.data.get(), X_AXIS_ID, Y_AXIS_IDS[0])
-            .on_hover(|_| data::Message::BackgroundHovered)
-            .on_press(|event: aksel::PressEvent<iced::Point>| {
-                (event.button == iced::mouse::Button::Left)
-                    .then_some(data::Message::BackgroundPressed.into())
-            })
             .on_drag(|event: aksel::DragEvent<aksel::Delta>| {
                 (event.button_held == iced::mouse::Button::Left)
                     .then_some(data::Message::ChartDragged(event.delta).into())
@@ -611,6 +610,8 @@ mod trace {
         ColumnChanged,
         ColorChange(Color),
         MarkerSizeChange(MarkerSize),
+        MarkerSizeIncrement,
+        MarkerSizeDecrement,
         /// Remove trace.
         Remove,
     }
@@ -659,6 +660,10 @@ mod trace {
 
         pub fn color(&self) -> &Color {
             &self.color
+        }
+
+        pub fn set_color(&mut self, color: Color) {
+            self.color = color;
         }
 
         /// Set the alpha (opacity) channel value.
@@ -713,6 +718,16 @@ mod trace {
                     self.marker_size = size;
                     iced::Task::none()
                 }
+                TraceMessage::MarkerSizeIncrement => {
+                    self.marker_size += 1.0;
+                    iced::Task::none()
+                }
+                TraceMessage::MarkerSizeDecrement => {
+                    if self.marker_size > 1.0 {
+                        self.marker_size -= 1.0;
+                    }
+                    iced::Task::none()
+                }
                 TraceMessage::Remove => iced::Task::none(),
             }
         }
@@ -748,14 +763,33 @@ mod trace {
             )
             .placeholder("<default>");
 
-            let sl_marker_size = iced::widget::slider(1..=10, self.marker_size as i32, |size| {
-                TraceMessage::MarkerSizeChange(size as MarkerSize)
-            });
+            let in_marker_size =
+                iced::widget::text_input("Marker size", &self.marker_size.to_string()).on_input(
+                    |input| {
+                        let value = match input.parse::<MarkerSize>() {
+                            Ok(value) => value,
+                            Err(err) => {
+                                #[cfg(feature = "tracing")]
+                                tracing::debug!("could not parse input `{input}`: {err:?}");
+
+                                self.marker_size
+                            }
+                        };
+
+                        TraceMessage::MarkerSizeChange(value)
+                    },
+                );
+            let up_marker_size =
+                iced::widget::button(icon::caret_up()).on_press(TraceMessage::MarkerSizeIncrement);
+            let dn_marker_size = iced::widget::button(icon::caret_down())
+                .on_press(TraceMessage::MarkerSizeDecrement);
+            let btns_marker_size = iced::widget::column![up_marker_size, dn_marker_size];
+            let marker_size = iced::widget::row![in_marker_size, btns_marker_size];
 
             let btn_remove = removable
                 .then_some(iced::widget::button(icon::minus()).on_press(TraceMessage::Remove));
 
-            iced::widget::row![pl_column, pl_color, sl_marker_size, btn_remove].into()
+            iced::widget::row![pl_column, pl_color, marker_size, btn_remove].into()
         }
     }
 }
@@ -763,20 +797,19 @@ mod trace {
 pub(super) mod data {
     use super::trace;
     use crate::dataset::plot::{color_to_lch, lch_to_color};
-    use iced_aksel as aksel;
-    use palette::{IntoColor, ShiftHue, convert::IntoColorUnclamped};
+    use iced_aksel::{self as aksel, interaction::IntoArea};
+    use palette::ShiftHue;
     use polars::prelude as pl;
 
     #[derive(Debug, Clone)]
     pub enum Message {
-        BackgroundHovered,
-        BackgroundPressed,
         ChartDragged(aksel::Delta),
         ChartScrolled(aksel::ScrollEvent<iced::Point>),
-        PointHovered {
+        ShapeEnter {
             point: aksel::interaction::Id,
-            modifiers: iced::keyboard::Modifiers,
+            event: aksel::EnterEvent,
         },
+        ShapeExit,
         PointMouseDown {
             point: aksel::interaction::Id,
             event: aksel::PressEvent<iced::Point>,
@@ -866,19 +899,12 @@ pub(super) mod data {
             match message {
                 Message::ChartDragged(_) => unreachable!("handled elsewhere"),
                 Message::ChartScrolled(_) => unreachable!("handled elsewhere"),
-                Message::BackgroundHovered => {
-                    self.hovered_id = None;
-                    iced::Task::none()
-                }
-                Message::BackgroundPressed => {
-                    self.selected_id = None;
-                    iced::Task::none()
-                }
-                Message::PointHovered {
-                    point,
-                    modifiers: _,
-                } => {
+                Message::ShapeEnter { point, event } => {
                     let _ = self.hovered_id.insert(point);
+                    iced::Task::none()
+                }
+                Message::ShapeExit => {
+                    self.selected_id = None;
                     iced::Task::none()
                 }
                 Message::PointMouseDown { point, event } => iced::Task::none(),
@@ -909,7 +935,7 @@ pub(super) mod data {
                         vec![color; self.df.height()]
                     }
                     trace::Color::Column(column) => {
-                        let colors = self.df.column(column).unwrap();
+                        let colors = self.df.column(column).expect("color column should exist");
                         let (min, max) = super::column_minmax_f64(colors);
                         let colors = super::column_to_values_f64(colors);
 
@@ -995,7 +1021,7 @@ pub(super) mod data {
             marker_size: super::trace::MarkerSize,
         ) {
             let marker_size = aksel::Measure::Screen(marker_size);
-            match marker {
+            let interaction = match marker {
                 trace::Marker::Circle => {
                     let shape = aksel::shape::Ellipse::circle(
                         aksel::PlotPoint::new(x, y),
@@ -1003,13 +1029,13 @@ pub(super) mod data {
                     )
                     .fill(color);
 
-                    plot.add_interaction(
-                        aksel::Interaction::new(id.clone(), &shape)
-                            .on_hover(|point, modifiers| Message::PointHovered { point, modifiers })
-                            .on_press(|point, event| Message::PointMouseDown { point, event }),
-                    );
-
+                    let area = shape.resolve_area(&plot);
                     plot.render(shape);
+
+                    aksel::Interaction::new(area)
+                        .on_enter(|point, event| Message::ShapeEnter { point, event })
+                        .on_exit(Message::ShapeExit)
+                        .on_press(|point, event| Message::PointMouseDown { point, event })
                 }
                 trace::Marker::Square => {
                     let shape = aksel::shape::Rectangle::centered(
@@ -1019,13 +1045,13 @@ pub(super) mod data {
                     )
                     .fill(color);
 
-                    plot.add_interaction(
-                        aksel::Interaction::new(id.clone(), &shape)
-                            .on_hover(|point, modifiers| Message::PointHovered { point, modifiers })
-                            .on_press(|point, event| Message::PointMouseDown { point, event }),
-                    );
-
+                    let area = shape.resolve_area(&plot);
                     plot.render(shape);
+
+                    aksel::Interaction::new(area)
+                        .on_enter(|point, event| Message::ShapeEnter { point, event })
+                        .on_exit(Message::ShapeExit)
+                        .on_press(|point, event| Message::PointMouseDown { point, event })
                 }
                 trace::Marker::Triangle => {
                     let shape = aksel::shape::Triangle::centered(
@@ -1035,15 +1061,17 @@ pub(super) mod data {
                     )
                     .fill(color);
 
-                    plot.add_interaction(
-                        aksel::Interaction::new(id.clone(), &shape)
-                            .on_hover(|point, modifiers| Message::PointHovered { point, modifiers })
-                            .on_press(|point, event| Message::PointMouseDown { point, event }),
-                    );
-
+                    let area = shape.resolve_area(&plot);
                     plot.render(shape);
+
+                    aksel::Interaction::new(area)
+                        .on_enter(|point, event| Message::ShapeEnter { point, event })
+                        .on_exit(Message::ShapeExit)
+                        .on_press(|point, event| Message::PointMouseDown { point, event })
                 }
-            }
+            };
+
+            plot.push_interaction(id.clone(), interaction);
         }
     }
 
@@ -1128,18 +1156,20 @@ fn column_minmax_f64(column: &pl::Column) -> (f64, f64) {
 #[inline]
 fn column_to_values_f64(column: &pl::Column) -> Vec<f64> {
     match column.dtype() {
-        pl::DataType::Float64 => column
-            .f64()
-            .unwrap()
-            .into_no_null_iter()
-            .collect::<Vec<_>>(),
+        pl::DataType::Float64 => column.f64().unwrap().into_no_null_iter().collect(),
         pl::DataType::UInt8 => column
             .u8()
             .unwrap()
             .into_no_null_iter()
             .map(|v| v as f64)
-            .collect::<Vec<_>>(),
-        _ => todo!(),
+            .collect(),
+        pl::DataType::Int64 => column
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .map(|v| v as f64)
+            .collect(),
+        kind => todo!("{kind:?}"),
     }
 }
 

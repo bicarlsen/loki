@@ -1,3 +1,4 @@
+use crate::icon;
 use iced::widget;
 use jpk_reader as jpk;
 use polars::prelude as pl;
@@ -17,6 +18,7 @@ trait PlotOptions {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ChildWindowType {
+    Settings,
     DataTable,
     Pipeline,
     FileBrowser,
@@ -25,6 +27,7 @@ pub enum ChildWindowType {
 impl<'a> iced::advanced::text::IntoFragment<'a> for ChildWindowType {
     fn into_fragment(self) -> widget::text::Fragment<'a> {
         match self {
+            ChildWindowType::Settings => Cow::Borrowed("Settings"),
             ChildWindowType::DataTable => Cow::Borrowed("Data table"),
             ChildWindowType::Pipeline => Cow::Borrowed("Pipeline"),
             ChildWindowType::FileBrowser => Cow::Borrowed("File browser"),
@@ -39,6 +42,9 @@ pub enum Message {
         window: iced::window::Id,
         kind: ChildWindowType,
     },
+    OpenSettings,
+    SettingsOpened(iced::window::Id),
+    SettingsClosed,
     OpenDataTable,
     DataTableOpened(iced::window::Id),
     DataTableClosed,
@@ -50,6 +56,8 @@ pub enum Message {
     FilesBrowserClosed,
     #[from]
     Plot(plot::Message),
+    #[from]
+    Settings(settings::Message),
     #[from]
     DataTable(data_table::Message),
     #[from]
@@ -90,10 +98,11 @@ impl PlotOptions for DatasetState {
 }
 
 #[derive(Default)]
-struct Children {
-    data_table: Option<(iced::window::Id, data_table::DataTable)>,
-    pipeline: Option<iced::window::Id>,
-    files_browser: Option<(iced::window::Id, ())>,
+pub struct Children {
+    pub(crate) settings: Option<(iced::window::Id, settings::Settings)>,
+    pub(crate) data_table: Option<(iced::window::Id, data_table::DataTable)>,
+    pub(crate) pipeline: Option<iced::window::Id>,
+    pub(crate) files_browser: Option<(iced::window::Id, ())>,
 }
 
 pub struct Dataset {
@@ -118,6 +127,14 @@ impl Dataset {
                 jpk::dataset::DatasetType::VoltageSpectroscopyCollection
             }
         }
+    }
+
+    pub fn window_id(&self) -> &iced::window::Id {
+        &self.window_id
+    }
+
+    pub fn children(&self) -> &Children {
+        &self.children
     }
 }
 
@@ -158,6 +175,28 @@ impl Dataset {
         match message {
             Message::WindowOpened(_) => iced::Task::none(),
             Message::ChildWindowOpened { .. } => iced::Task::none(),
+            Message::OpenSettings => {
+                if let Some((id, _)) = &self.children.settings {
+                    iced::window::gain_focus(id.clone())
+                } else {
+                    let (_, open) = iced::window::open(iced::window::Settings::default());
+                    open.map(Message::SettingsOpened)
+                }
+            }
+            Message::SettingsOpened(id) => {
+                assert!(self.children.settings.is_none(), "settings already exist");
+                let settings = settings::Settings::new();
+                self.children.settings = Some((id.clone(), settings));
+                iced::Task::done(Message::ChildWindowOpened {
+                    window: id.clone(),
+                    kind: ChildWindowType::Settings,
+                })
+            }
+            Message::SettingsClosed => {
+                assert!(self.children.settings.is_some(), "settings should exist");
+                self.children.settings = None;
+                iced::Task::none()
+            }
             Message::OpenDataTable => {
                 if let Some((id, _)) = &self.children.data_table {
                     iced::window::gain_focus(id.clone())
@@ -172,28 +211,38 @@ impl Dataset {
                     "data table already exists"
                 );
                 let data_table = data_table::DataTable::new(self.pipeline.output().clone());
-                let _ = self.children.data_table.insert((id.clone(), data_table));
+                self.children.data_table = Some((id.clone(), data_table));
                 iced::Task::done(Message::ChildWindowOpened {
                     window: id.clone(),
                     kind: ChildWindowType::DataTable,
                 })
             }
             Message::DataTableClosed => {
-                assert!(self.children.data_table.is_some());
-                let _ = self.children.data_table.take();
+                assert!(
+                    self.children.data_table.is_some(),
+                    "data table should exist"
+                );
+                self.children.data_table = None;
                 iced::Task::none()
             }
             Message::OpenPipeline => {
                 if let Some(id) = self.children.pipeline {
                     iced::window::gain_focus(id.clone())
                 } else {
-                    let (_, open) = iced::window::open(iced::window::Settings::default());
+                    let settings = iced::window::Settings {
+                        size: iced::Size {
+                            width: 200.0,
+                            height: 600.0,
+                        },
+                        ..Default::default()
+                    };
+                    let (_, open) = iced::window::open(settings);
                     open.map(Message::PipelineOpened)
                 }
             }
             Message::PipelineOpened(id) => {
                 assert!(self.children.pipeline.is_none(), "pipeline already exists");
-                let _ = self.children.pipeline.insert(id.clone());
+                self.children.pipeline = Some(id.clone());
 
                 iced::Task::batch([
                     iced::Task::done(Message::WindowOpened(id.clone())),
@@ -205,7 +254,7 @@ impl Dataset {
             }
             Message::PipelineClosed => {
                 assert!(self.children.pipeline.is_some());
-                let _ = self.children.pipeline.take();
+                self.children.pipeline = None;
                 iced::Task::none()
             }
             Message::OpenFilesBrowser => {
@@ -214,7 +263,7 @@ impl Dataset {
             Message::FilesBrowserOpened(id) => todo!(),
             Message::FilesBrowserClosed => {
                 assert!(self.children.files_browser.is_some());
-                let _ = self.children.files_browser.take();
+                self.children.files_browser = None;
                 iced::Task::none()
             }
             Message::Plot(message) => {
@@ -222,9 +271,7 @@ impl Dataset {
                     self.children.data_table.as_mut()
                 {
                     let data_table_msg = match &message {
-                        plot::Message::Data(plot::data::Message::PointHovered {
-                            point, ..
-                        }) => {
+                        plot::Message::Data(plot::data::Message::ShapeEnter { point, .. }) => {
                             let idx = self
                                 .plot
                                 .record_idx_by_point_id(point)
@@ -232,7 +279,7 @@ impl Dataset {
 
                             Some(data_table::Message::HighlightRecord(idx))
                         }
-                        plot::Message::Data(plot::data::Message::BackgroundHovered) => {
+                        plot::Message::Data(plot::data::Message::ShapeExit) => {
                             Some(data_table::Message::ClearHighlight)
                         }
                         _ => None,
@@ -247,6 +294,13 @@ impl Dataset {
                 };
 
                 iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
+            }
+            Message::Settings(message) => {
+                if let Some((_, settings)) = self.children.settings.as_mut() {
+                    settings.update(message).map(Message::Settings)
+                } else {
+                    iced::Task::none()
+                }
             }
             Message::DataTable(message) => {
                 if let Some((_, data_table)) = self.children.data_table.as_mut() {
@@ -281,6 +335,7 @@ impl Dataset {
     ) -> iced::Element<'_, Message> {
         if self.window_id == *window {
             let plot_container = widget::container(self.plot.view().map(Message::Plot));
+            let btn_settings = widget::button(icon::cog()).on_press(Message::OpenSettings);
             let btn_open_data_table = widget::button("Data table").on_press(Message::OpenDataTable);
             let btn_pipeline = widget::button("Pipeline").on_press(Message::OpenPipeline);
             let btn_file_browser = self
@@ -288,9 +343,19 @@ impl Dataset {
                 .is_file_collection()
                 .then_some(widget::button("Files browser").on_press(Message::OpenFilesBrowser));
 
-            let controls = widget::column![btn_open_data_table, btn_pipeline, btn_file_browser,];
+            let controls = widget::column![
+                btn_settings,
+                btn_open_data_table,
+                btn_pipeline,
+                btn_file_browser,
+            ];
             let controls_container = widget::container(controls);
             return widget::row![plot_container, controls_container].into();
+        }
+        if let Some((id, settings)) = &self.children.settings {
+            if id == window {
+                return settings.view().map(Message::Settings);
+            }
         }
         if let Some((id, data_table)) = &self.children.data_table {
             if id == window {
@@ -325,6 +390,56 @@ impl Dataset {
                 ),
             ]),
             _ => self.pipeline.update(message).map(Message::Pipeline),
+        }
+    }
+}
+
+mod settings {
+    #[derive(Debug, Clone)]
+    pub enum Message {
+        EnableIndexY(bool),
+        EnableIndexFrame(bool),
+    }
+
+    #[derive(Default)]
+    #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
+    pub struct Settings {
+        /// y-axis as index.
+        index_y: bool,
+        /// frame as index.
+        index_frame: bool,
+    }
+
+    impl Settings {
+        pub fn new() -> Self {
+            Default::default()
+        }
+
+        pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+            match message {
+                Message::EnableIndexY(enabled) => {
+                    self.index_y = enabled;
+                    iced::Task::none()
+                }
+                Message::EnableIndexFrame(enabled) => {
+                    self.index_frame = enabled;
+                    iced::Task::none()
+                }
+            }
+        }
+
+        pub fn view(&self) -> iced::Element<'_, Message> {
+            let title = iced::widget::text("Settings");
+
+            let cb_index_y = iced::widget::checkbox(self.index_y).on_toggle(Message::EnableIndexY);
+            let inp_index_y = iced::widget::row![cb_index_y, iced::widget::text("Index y-axis")];
+
+            let cb_index_frame =
+                iced::widget::checkbox(self.index_frame).on_toggle(Message::EnableIndexFrame);
+            let inp_index_frame =
+                iced::widget::row![cb_index_frame, iced::widget::text("Index frame")];
+
+            iced::widget::column![title, inp_index_y, inp_index_frame].into()
         }
     }
 }
@@ -374,7 +489,6 @@ mod data_table {
 
         pub fn view(
             &self,
-
             theme: &iced::advanced::graphics::core::Theme,
         ) -> iced::Element<'_, Message> {
             use widget::text;
@@ -410,7 +524,12 @@ mod data_table {
             });
 
             let table = widget::table::Table::new(columns, 0..self.df.height());
-            widget::scrollable(table).into()
+            widget::scrollable(table)
+                .direction(iced::widget::scrollable::Direction::Both {
+                    vertical: iced::widget::scrollable::Scrollbar::new(),
+                    horizontal: iced::widget::scrollable::Scrollbar::new(),
+                })
+                .into()
         }
     }
 }

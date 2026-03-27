@@ -1,10 +1,13 @@
 module = "icon"
 
 [glyphs]
+cog = "fontawesome-cog"
 edit = "fontawesome-pencil"
-opendir = "fontawesome-folder-open-empty"
+folder = "fontawesome-folder-empty"
 file = "fontawesome-doc"
 save = "entypo-floppy"
 trash = "typicons-trash"
 plus = "fontawesome-plus"
 minus = "fontawesome-minus"
+caret_up = "fontawesome-angle-up"
+caret_down = "fontawesome-angle-down"

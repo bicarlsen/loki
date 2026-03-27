@@ -1,10 +1,22 @@
 // Generated automatically by iced_fontello at build time.
 // Do not edit manually. Source: ../fonts/icons.toml
-// 9c864d13279985db8adb885aeeb385f802e5a3fc47845c9707ad1b70857d0727
+// 87ac20c4c8eaf3eb7d06e9309c4caf7032f45a7df2fa391f5d6c506d10bfdbae
 use iced::Font;
 use iced::widget::{Text, text};
 
 pub const FONT: &[u8] = include_bytes!("../fonts/icons.ttf");
+
+pub fn caret_down<'a>() -> Text<'a> {
+    icon("\u{F107}")
+}
+
+pub fn caret_up<'a>() -> Text<'a> {
+    icon("\u{F106}")
+}
+
+pub fn cog<'a>() -> Text<'a> {
+    icon("\u{2699}")
+}
 
 pub fn edit<'a>() -> Text<'a> {
     icon("\u{270E}")
@@ -14,12 +26,12 @@ pub fn file<'a>() -> Text<'a> {
     icon("\u{1F4C4}")
 }
 
-pub fn minus<'a>() -> Text<'a> {
-    icon("\u{2D}")
+pub fn folder<'a>() -> Text<'a> {
+    icon("\u{F114}")
 }
 
-pub fn opendir<'a>() -> Text<'a> {
-    icon("\u{F115}")
+pub fn minus<'a>() -> Text<'a> {
+    icon("\u{2D}")
 }
 
 pub fn plus<'a>() -> Text<'a> {
