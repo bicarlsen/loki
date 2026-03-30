@@ -65,7 +65,7 @@ enum Message {
     },
     DatasetLastWindowClosed(PathBuf),
     /// Clear all datasets.
-    Clear,
+    ClearDatasets,
     AppClosed,
 }
 
@@ -136,26 +136,34 @@ impl App {
             Message::WindowClosed(id) => self.window_closed(id),
             Message::OpenDatasetFilePath(path) => self.open_dataset_file_path(path),
             Message::OpenDatasetDirPath(path) => self.open_dataset_dir_path(path),
-            Message::DatasetLoading { path } => self
-                .workspace
-                .update(workspace::Message::DatasetLoading { path })
-                .map(Into::into),
+            Message::DatasetLoading { path } => {
+                let action = self
+                    .workspace
+                    .update(workspace::Message::DatasetLoading { path });
+                assert!(matches!(action, workspace::Action::None));
+
+                iced::Task::none()
+            }
             Message::DatasetLoaded {
                 path,
                 reader,
                 dataframe,
             } => self.dataset_loaded(path, reader, dataframe),
-            Message::DatasetError { path, error } => self
-                .workspace
-                .update(workspace::Message::DatasetError { path, error })
-                .map(Into::into),
+            Message::DatasetError { path, error } => {
+                let action = self
+                    .workspace
+                    .update(workspace::Message::DatasetError { path, error });
+                assert!(matches!(action, workspace::Action::None));
+
+                iced::Task::none()
+            }
             Message::DatasetLastWindowClosed(dataset) => {
                 self.datasets
                     .remove(&dataset)
                     .expect("dataset should exist");
                 iced::Task::done(workspace::Message::DatasetClosed { path: dataset }.into())
             }
-            Message::Clear => self.clear_datasets(),
+            Message::ClearDatasets => self.clear_datasets(),
         }
     }
 
@@ -186,35 +194,24 @@ impl App {
 
 impl App {
     fn workspace_message(&mut self, message: workspace::Message) -> iced::Task<Message> {
-        match message {
-            workspace::Message::DatasetFilePathSelected(path) => {
-                iced::Task::done(Message::OpenDatasetFilePath(path))
-            }
-            workspace::Message::DatasetDirPathSelected(path) => {
-                iced::Task::done(Message::OpenDatasetDirPath(path))
-            }
+        let action = self.workspace.update(message);
+        #[cfg(feature = "tracing")]
+        ::tracing::trace!(?action);
+
+        match action {
+            workspace::Action::None => iced::Task::none(),
+            workspace::Action::Run(task) => task.map(Message::Workspace),
+            workspace::Action::OpenDatasetFile(path) => self.open_dataset_file_path(path),
+            workspace::Action::OpenDatasetDir(path) => self.open_dataset_dir_path(path),
             #[cfg(feature = "project")]
-            workspace::Message::RequestSaveProject => self.request_save_project(),
+            workspace::Action::SaveProject(path) => self.save_project(path),
             #[cfg(feature = "project")]
-            workspace::Message::RequestOpenProject => self.request_open_project(),
-            _ => self.workspace.update(message).map(Message::Workspace),
+            workspace::Action::OpenProject(path) => self.open_project(path),
         }
     }
 
     #[cfg(feature = "project")]
-    fn request_save_project(&self) -> iced::Task<Message> {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("loki", &[project::FILE_EXT])
-            .save_file()
-        else {
-            return iced::Task::none();
-        };
-
-        self.save_as_project(path)
-    }
-
-    #[cfg(feature = "project")]
-    fn save_as_project(&self, path: PathBuf) -> iced::Task<Message> {
+    fn save_project(&self, path: PathBuf) -> iced::Task<Message> {
         let state = project::State::new(self);
         match state.save(&path) {
             Ok(_) => iced::Task::none(),
@@ -225,18 +222,6 @@ impl App {
                 todo!("could not save project: {err:?}")
             }
         }
-    }
-
-    #[cfg(feature = "project")]
-    fn request_open_project(&mut self) -> iced::Task<Message> {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("loki", &[project::FILE_EXT])
-            .pick_file()
-        else {
-            return iced::Task::none();
-        };
-
-        self.open_project(path)
     }
 
     #[cfg(feature = "project")]
@@ -393,25 +378,27 @@ impl App {
         let task = match &kind {
             WindowKind::Workspace => focus,
             WindowKind::Dataset(path) => {
-                let workspace_task =
-                    self.workspace
-                        .update(workspace::Message::DatasetWindowOpened {
-                            path: path.clone(),
-                            window: id.clone(),
-                        });
+                let action = self
+                    .workspace
+                    .update(workspace::Message::DatasetWindowOpened {
+                        path: path.clone(),
+                        window: id.clone(),
+                    });
 
-                focus.chain(workspace_task.map(Message::Workspace))
+                assert!(matches!(action, workspace::Action::None));
+                iced::Task::none()
             }
             WindowKind::DatasetChild { dataset, kind } => {
-                let workspace_task =
-                    self.workspace
-                        .update(workspace::Message::DatasetChildWindowOpened {
-                            path: dataset.clone(),
-                            window: id.clone(),
-                            kind: kind.clone(),
-                        });
+                let action = self
+                    .workspace
+                    .update(workspace::Message::DatasetChildWindowOpened {
+                        path: dataset.clone(),
+                        window: id.clone(),
+                        kind: kind.clone(),
+                    });
+                assert!(matches!(action, workspace::Action::None));
 
-                focus.chain(workspace_task.map(Message::Workspace))
+                iced::Task::none()
             }
         };
         self.windows.insert(id, kind);

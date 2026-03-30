@@ -17,7 +17,7 @@ pub enum Message {
     DatasetFilePathSelected(PathBuf),
     /// The user selected a datset directory path to try to open.
     DatasetDirPathSelected(PathBuf),
-    /// A dataset is loading.
+    // A dataset is loading.
     DatasetLoading {
         path: PathBuf,
     },
@@ -54,6 +54,20 @@ pub enum Message {
     RequestSaveProject,
     #[cfg(feature = "project")]
     RequestOpenProject,
+}
+
+#[derive(Debug)]
+pub enum Action {
+    None,
+    Run(iced::Task<Message>),
+    /// The user selected a dataset file path to try to open.
+    OpenDatasetFile(PathBuf),
+    /// The user selected a dataset directory path to try to open.
+    OpenDatasetDir(PathBuf),
+    #[cfg(feature = "project")]
+    SaveProject(PathBuf),
+    #[cfg(feature = "project")]
+    OpenProject(PathBuf),
 }
 
 pub enum DatasetState {
@@ -138,43 +152,56 @@ impl Workspace {
         (Self::default(), open.map(Message::WorkspaceOpened))
     }
 
-    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+    pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::WorkspaceOpened(id) => iced::Task::none(),
-            Message::WorkspaceClosed(id) => self.workspace_closed(id),
-            Message::PromptOpenDatasetFile => self.prompt_open_dataset_file(),
-            Message::PromptOpenDatasetDir => self.prompt_open_dataset_dir(),
-            Message::DatasetFilePathSelected(_) => iced::Task::done(message),
-            Message::DatasetDirPathSelected(_) => iced::Task::done(message),
-            Message::DatasetLoading { path } => self.dataset_loading(path),
-            Message::DatasetLoaded { path, kind } => self.dataset_loaded(path, kind),
+            Message::WorkspaceOpened(id) => Action::None,
+            Message::WorkspaceClosed(id) => Action::None,
+            Message::PromptOpenDatasetFile => Action::Run(self.prompt_open_dataset_file()),
+            Message::PromptOpenDatasetDir => Action::Run(self.prompt_open_dataset_dir()),
+            Message::DatasetFilePathSelected(path) => Action::OpenDatasetFile(path),
+            Message::DatasetDirPathSelected(path) => Action::OpenDatasetDir(path),
+            Message::DatasetLoading { path } => {
+                self.dataset_set_loading(path);
+                Action::None
+            }
+            Message::DatasetLoaded { path, kind } => Action::Run(self.dataset_loaded(path, kind)),
             Message::DatasetWindowOpened { path, window } => {
-                self.dataset_window_opened(path, window)
+                self.dataset_window_opened(path, window);
+                Action::None
             }
             Message::DatasetChildWindowOpened { path, window, kind } => {
-                self.dataset_child_window_opened(path, window, kind)
+                self.dataset_child_window_opened(path, window, kind);
+                Action::None
             }
             Message::DatasetChildWindowClosed { path, kind } => {
-                self.dataset_child_window_closed(path, kind)
+                self.dataset_child_window_closed(path, kind);
+                Action::None
             }
-            Message::DatasetError { path, error } => self.dataset_error(path, error),
-            Message::DatasetClosed { path } => self.dataset_closed(path),
+            Message::DatasetError { path, error } => {
+                todo!("dataset error: {error}")
+            }
+            Message::DatasetClosed { path } => {
+                self.datasets.retain(|dataset| dataset.path != path);
+                Action::None
+            }
             Message::OpenOrFocusDataset(dataset) => {
                 if let Some(dataset) = self.get(dataset) {
                     if let Some(id) = dataset.window.as_ref() {
-                        iced::window::gain_focus(id.clone())
+                        Action::Run(iced::window::gain_focus(id.clone()))
                     } else {
-                        todo!();
+                        todo!("dataset window not found");
                     }
                 } else {
-                    todo!();
+                    todo!("dataset not found");
                 }
             }
-            Message::FocusWindow(id) => iced::window::gain_focus::<Message>(id).discard(),
+            Message::FocusWindow(id) => {
+                Action::Run(iced::window::gain_focus::<Message>(id).discard())
+            }
             #[cfg(feature = "project")]
-            Message::RequestSaveProject => iced::Task::none(),
+            Message::RequestSaveProject => self.request_save_project(),
             #[cfg(feature = "project")]
-            Message::RequestOpenProject => iced::Task::none(),
+            Message::RequestOpenProject => self.request_open_project(),
         }
     }
 
@@ -267,10 +294,6 @@ impl Workspace {
 }
 
 impl Workspace {
-    fn workspace_closed(&mut self, window: iced::window::Id) -> iced::Task<Message> {
-        iced::Task::none()
-    }
-
     fn prompt_open_dataset_file(&mut self) -> iced::Task<Message> {
         rfd::FileDialog::new()
             .set_title("Open dataset file")
@@ -287,7 +310,7 @@ impl Workspace {
             .unwrap_or(iced::Task::none())
     }
 
-    fn dataset_loading(&mut self, path: PathBuf) -> iced::Task<Message> {
+    fn dataset_set_loading(&mut self, path: PathBuf) {
         if let Some(dataset) = self
             .datasets
             .iter_mut()
@@ -304,8 +327,6 @@ impl Workspace {
                 children: Default::default(),
             });
         }
-
-        iced::Task::none()
     }
 
     fn dataset_loaded(
@@ -326,11 +347,7 @@ impl Workspace {
         iced::Task::none()
     }
 
-    fn dataset_window_opened(
-        &mut self,
-        path: PathBuf,
-        window: iced::window::Id,
-    ) -> iced::Task<Message> {
+    fn dataset_window_opened(&mut self, path: PathBuf, window: iced::window::Id) {
         let Some(dataset) = self
             .datasets
             .iter_mut()
@@ -340,7 +357,6 @@ impl Workspace {
         };
 
         let _ = dataset.window.insert(window);
-        iced::Task::none()
     }
 
     fn dataset_child_window_opened(
@@ -348,7 +364,7 @@ impl Workspace {
         path: PathBuf,
         window: iced::window::Id,
         kind: dataset::ChildWindowType,
-    ) -> iced::Task<Message> {
+    ) {
         let dataset = self
             .datasets
             .iter_mut()
@@ -385,14 +401,9 @@ impl Workspace {
                 dataset.children.file_browser = Some(window);
             }
         }
-        iced::Task::none()
     }
 
-    fn dataset_child_window_closed(
-        &mut self,
-        path: PathBuf,
-        kind: dataset::ChildWindowType,
-    ) -> iced::Task<Message> {
+    fn dataset_child_window_closed(&mut self, path: PathBuf, kind: dataset::ChildWindowType) {
         let dataset = self
             .datasets
             .iter_mut()
@@ -403,17 +414,28 @@ impl Workspace {
             .children
             .take_child(kind)
             .expect("window should exist");
-
-        iced::Task::none()
     }
 
-    fn dataset_error(&mut self, path: PathBuf, error: String) -> iced::Task<Message> {
-        todo!("dataset error: {error}")
+    #[cfg(feature = "project")]
+    fn request_save_project(&self) -> Action {
+        match rfd::FileDialog::new()
+            .add_filter("loki", &[crate::project::FILE_EXT])
+            .save_file()
+        {
+            Some(path) => Action::SaveProject(path),
+            None => Action::None,
+        }
     }
 
-    fn dataset_closed(&mut self, path: PathBuf) -> iced::Task<Message> {
-        self.datasets.retain(|dataset| dataset.path != path);
-        iced::Task::none()
+    #[cfg(feature = "project")]
+    fn request_open_project(&mut self) -> Action {
+        match rfd::FileDialog::new()
+            .add_filter("loki", &[crate::project::FILE_EXT])
+            .pick_file()
+        {
+            Some(path) => Action::OpenProject(path),
+            None => Action::None,
+        }
     }
 }
 
