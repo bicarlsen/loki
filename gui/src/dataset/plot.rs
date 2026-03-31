@@ -4,7 +4,7 @@ use palette::IntoColor;
 use polars::prelude::{self as pl};
 
 type PlotValue = f64;
-pub type YAxisId = u8;
+pub type ValueAxisId = u8;
 
 pub const X_AXIS_ID: &str = "x";
 pub const Y_AXIS_IDS: [&str; 1] = ["y0"];
@@ -23,7 +23,7 @@ impl Default for AxisScale {
 }
 
 #[derive(Clone, Debug)]
-pub enum XAxisValues {
+pub enum IndexValues {
     /// Use dataframe index as axis values.
     Index,
     /// Use a column from the dataframe as axis values.
@@ -31,44 +31,44 @@ pub enum XAxisValues {
     Series(String),
 }
 
-impl XAxisValues {
+impl IndexValues {
     pub fn take(&mut self) -> Option<String> {
         match std::mem::replace(self, Self::Index) {
-            XAxisValues::Index => None,
-            XAxisValues::Series(label) => Some(label),
+            IndexValues::Index => None,
+            IndexValues::Series(label) => Some(label),
         }
     }
 
     pub fn insert(&mut self, value: impl Into<String>) -> Option<String> {
         match std::mem::replace(self, Self::Series(value.into())) {
-            XAxisValues::Index => None,
-            XAxisValues::Series(label) => Some(label),
+            IndexValues::Index => None,
+            IndexValues::Series(label) => Some(label),
         }
     }
 }
 
-impl Default for XAxisValues {
+impl Default for IndexValues {
     fn default() -> Self {
         Self::Index
     }
 }
 
 #[derive(Default, Clone)]
-struct XAxis {
+struct IndexAxis {
     scale: AxisScale,
-    values: XAxisValues,
+    values: IndexValues,
 }
 
 #[derive(Debug, Clone)]
-struct YAxis {
-    id: YAxisId,
+struct ValueAxis {
+    id: ValueAxisId,
     scale: AxisScale,
     position: aksel::axis::Position,
     traces: trace::TraceGroup,
 }
 
-impl YAxis {
-    pub fn new(id: YAxisId) -> Self {
+impl ValueAxis {
+    pub fn new(id: ValueAxisId) -> Self {
         Self {
             id,
             scale: Default::default(),
@@ -103,20 +103,21 @@ impl YAxis {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Axis {
-    X,
-    Y(YAxisId),
+#[derive(Default)]
+pub struct Index {
+    x: IndexAxis,
+    y: Option<IndexAxis>,
+    frame: Option<IndexAxis>,
 }
 
 #[derive(Debug, Clone, derive_more::From)]
 pub enum Message {
     SetTitle(String),
-    UpdateXAxisValues(XAxisValues),
+    UpdateXAxisValues(IndexValues),
     XAxisValuesUpdated,
     DataframeChange(pl::DataFrame),
     TraceGroup {
-        axis: YAxisId,
+        axis: ValueAxisId,
         message: trace::GroupMessage,
     },
     #[from]
@@ -124,8 +125,8 @@ pub enum Message {
 }
 
 pub struct Options {
-    x_axis: XAxis,
-    y_axes: Vec<YAxis>,
+    x_axis: IndexAxis,
+    y_axes: Vec<ValueAxis>,
 }
 
 impl Options {
@@ -134,7 +135,7 @@ impl Options {
     }
 
     pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.x_axis.values = XAxisValues::Series(x_axis.into());
+        self.x_axis.values = IndexValues::Series(x_axis.into());
         self
     }
 
@@ -143,13 +144,13 @@ impl Options {
         self
     }
 
-    pub fn new_y_axis(&mut self) -> YAxisId {
+    pub fn new_y_axis(&mut self) -> ValueAxisId {
         let id = self.y_axes.iter().map(|ax| ax.id).max().unwrap() + 1;
-        self.y_axes.push(YAxis::new(id));
+        self.y_axes.push(ValueAxis::new(id));
         id
     }
 
-    pub fn add_trace(&mut self, y_axis: YAxisId, column: impl Into<String>) -> &mut Self {
+    pub fn add_trace(&mut self, y_axis: ValueAxisId, column: impl Into<String>) -> &mut Self {
         let ax = self.y_axes.iter_mut().find(|ax| ax.id == y_axis).unwrap();
         ax.add_trace(column);
         self
@@ -160,7 +161,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             x_axis: Default::default(),
-            y_axes: vec![YAxis::new(0)],
+            y_axes: vec![ValueAxis::new(0)],
         }
     }
 }
@@ -170,6 +171,7 @@ pub struct State {
     chart: aksel::State<&'static str, PlotValue>,
     data: aksel::Cached<data::State>,
     title: String,
+    index: Index,
 }
 
 impl State {
@@ -191,6 +193,7 @@ impl State {
             chart,
             data: aksel::Cached::new(data),
             title: "".to_string(),
+            index,
         })
     }
 
@@ -211,23 +214,23 @@ impl State {
         }
     }
 
-    fn update_x_axis_values(&mut self, values: XAxisValues) -> iced::Task<Message> {
+    fn update_x_axis_values(&mut self, values: IndexValues) -> iced::Task<Message> {
         // TODO: account for logarithmic scale
         let data = self.data.edit();
-        data.x_axis.values = values;
+        data.index.values = values;
         iced::Task::done(Message::XAxisValuesUpdated)
     }
 
     fn rescale_xaxis(&mut self) -> iced::Task<Message> {
         let data = self.data.get();
-        let axis = x_axis_to_aksel(&data.x_axis, &data.df);
+        let axis = x_axis_to_aksel(&data.index, &data.df);
         self.chart.set_axis(X_AXIS_ID, axis);
         iced::Task::none()
     }
 
     fn update_trace_group(
         &mut self,
-        axis: YAxisId,
+        axis: ValueAxisId,
         message: trace::GroupMessage,
     ) -> iced::Task<Message> {
         match message {
@@ -281,12 +284,12 @@ impl State {
             .map(|name| name.to_string())
             .collect::<Vec<_>>();
 
-        if let XAxisValues::Series(label) = &data.x_axis.values {
+        if let IndexValues::Series(label) = &data.index.values {
             if !columns.contains(label) {
-                if let XAxisValues::Series(default) = &self.options.x_axis.values {
-                    data.x_axis.values.insert(default.clone());
+                if let IndexValues::Series(default) = &self.options.x_axis.values {
+                    data.index.values.insert(default.clone());
                 } else {
-                    data.x_axis.values.take();
+                    data.index.values.take();
                 }
             }
         }
@@ -419,15 +422,15 @@ impl State {
             .collect::<Vec<_>>();
         let pl_xaxis = iced::widget::pick_list(
             columns,
-            match &data.x_axis.values {
-                XAxisValues::Index => None,
-                XAxisValues::Series(column) => Some(column.clone()),
+            match &data.index.values {
+                IndexValues::Index => None,
+                IndexValues::Series(column) => Some(column.clone()),
             },
             |selection| {
                 let values = if selection.is_empty() {
-                    XAxisValues::Index
+                    IndexValues::Index
                 } else {
-                    XAxisValues::Series(selection)
+                    IndexValues::Series(selection)
                 };
 
                 Message::UpdateXAxisValues(values)
@@ -854,19 +857,23 @@ pub(super) mod data {
 
     pub struct State {
         pub(super) df: pl::DataFrame,
-        pub(super) x_axis: super::XAxis,
-        pub(super) y_axes: Vec<super::YAxis>,
+        pub(super) index: super::IndexAxis,
+        pub(super) y_axes: Vec<super::ValueAxis>,
         points: Points,
         pub(super) hovered_id: Option<aksel::interaction::Id>,
         pub(super) selected_id: Option<aksel::interaction::Id>,
     }
 
     impl State {
-        pub fn new(df: pl::DataFrame, x_axis: super::XAxis, y_axes: Vec<super::YAxis>) -> Self {
+        pub fn new(
+            df: pl::DataFrame,
+            x_axis: super::IndexAxis,
+            y_axes: Vec<super::ValueAxis>,
+        ) -> Self {
             let points = Points::new(df.height());
             Self {
                 df,
-                x_axis,
+                index: x_axis,
                 y_axes,
                 points,
                 hovered_id: Default::default(),
@@ -874,11 +881,11 @@ pub(super) mod data {
             }
         }
 
-        pub fn y_axis(&self, axis: super::YAxisId) -> Option<&super::YAxis> {
+        pub fn y_axis(&self, axis: super::ValueAxisId) -> Option<&super::ValueAxis> {
             self.y_axes.iter().find(|ax| ax.id == axis)
         }
 
-        pub fn y_axis_mut(&mut self, axis: super::YAxisId) -> Option<&mut super::YAxis> {
+        pub fn y_axis_mut(&mut self, axis: super::ValueAxisId) -> Option<&mut super::ValueAxis> {
             self.y_axes.iter_mut().find(|ax| ax.id == axis)
         }
 
@@ -917,7 +924,7 @@ pub(super) mod data {
             &self,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             base_color: iced::Color,
-            axis: &super::YAxis,
+            axis: &super::ValueAxis,
         ) {
             let num_traces = axis.traces.len();
             assert_ne!(num_traces, 0, "axis traces must not be empty");
@@ -983,12 +990,12 @@ pub(super) mod data {
             let y = self.df.column(column_label).unwrap();
             let y = super::column_to_values_f64(y);
 
-            let x = match &self.x_axis.values {
-                super::XAxisValues::Series(column) => {
+            let x = match &self.index.values {
+                super::IndexValues::Series(column) => {
                     let x = self.df.column(column).unwrap();
                     super::column_to_values_f64(x)
                 }
-                super::XAxisValues::Index => (0..self.df.height())
+                super::IndexValues::Index => (0..self.df.height())
                     .map(|x| x as super::PlotValue)
                     .collect::<Vec<_>>(),
             };
@@ -1089,16 +1096,16 @@ pub(super) mod data {
     }
 }
 
-fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
+fn x_axis_to_aksel(axis: &IndexAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     const POSITION: aksel::axis::Position = aksel::axis::Position::Bottom;
 
     match &axis.values {
-        XAxisValues::Index => aksel::Axis::new(
+        IndexValues::Index => aksel::Axis::new(
             aksel::scale::Linear::new(0.0, df.height() as PlotValue),
             POSITION,
         )
         .with_tick_renderer(axis_renderer_ticks()),
-        XAxisValues::Series(name) => {
+        IndexValues::Series(name) => {
             let column = df.column(name).unwrap();
             let (min, max) = column_minmax_f64(column);
             match axis.scale {
@@ -1114,7 +1121,7 @@ fn x_axis_to_aksel(axis: &XAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
 }
 
 #[inline]
-fn y_axis_to_aksel(axis: &YAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
+fn y_axis_to_aksel(axis: &ValueAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
     let (min, max) = axis.traces.minmax_f64(df);
     match axis.scale {
         AxisScale::Linear => aksel::Axis::new(aksel::scale::Linear::new(min, max), axis.position)

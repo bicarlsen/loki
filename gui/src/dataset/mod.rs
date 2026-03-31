@@ -401,6 +401,10 @@ mod settings {
         EnableIndexFrame(bool),
     }
 
+    pub enum Action {
+        SetIndex {},
+    }
+
     #[derive(Default)]
     #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
     pub struct Settings {
@@ -432,12 +436,12 @@ mod settings {
             let title = iced::widget::text("Settings");
 
             let cb_index_y = iced::widget::checkbox(self.index_y).on_toggle(Message::EnableIndexY);
-            let inp_index_y = iced::widget::row![cb_index_y, iced::widget::text("Index y-axis")];
+            let inp_index_y = iced::widget::row![cb_index_y, iced::widget::text("y-axis index")];
 
             let cb_index_frame =
                 iced::widget::checkbox(self.index_frame).on_toggle(Message::EnableIndexFrame);
             let inp_index_frame =
-                iced::widget::row![cb_index_frame, iced::widget::text("Index frame")];
+                iced::widget::row![cb_index_frame, iced::widget::text("Frame index")];
 
             iced::widget::column![title, inp_index_y, inp_index_frame].into()
         }
