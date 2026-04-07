@@ -13,7 +13,8 @@ trait IsFileCollection {
 }
 
 trait PlotOptions {
-    fn plot_options(&self) -> plot::Options;
+    type YAxis;
+    fn plot_options(&self) -> plot::Options<Self::YAxis>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,7 +90,8 @@ impl IsFileCollection for DatasetState {
 }
 
 impl PlotOptions for DatasetState {
-    fn plot_options(&self) -> plot::Options {
+    type YAxis = Vec<plot::ValueAxis>;
+    fn plot_options(&self) -> plot::Options<Self::YAxis> {
         match self {
             DatasetState::VoltageSpectroscopy(state) => state.plot_options(),
             DatasetState::VoltageSpectroscopyCollection(state) => state.plot_options(),

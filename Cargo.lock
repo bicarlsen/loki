@@ -2128,8 +2128,9 @@ dependencies = [
 
 [[package]]
 name = "iced_aksel"
-version = "0.2.0"
-source = "git+https://github.com/QuistHQ/iced_aksel?branch=shape-interactivity#40d77d3d1935f0485f2bd1491f7967e3e5a7e837"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a654b0f95496cc09b121d0678977100227bbc1584eb3b1bf28b0869833eabd9"
 dependencies = [
  "aksel",
  "derivative",
@@ -2618,7 +2619,6 @@ dependencies = [
 [[package]]
 name = "jpk_reader"
 version = "0.0.1"
-source = "git+https://github.com/bicarlsen/jpk_reader?branch=dev#6a0fd043ef1860d9a6fbea29236362b3fa8f8e2e"
 dependencies = [
  "derive_more",
  "polars",

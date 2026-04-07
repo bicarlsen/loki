@@ -12,15 +12,14 @@ iced_aw = { git = "https://github.com/iced-rs/iced_aw", default-features = false
     "menu",
 ] }
 rfd = "0.17.2"
-# jpk_reader = { path = "../../jpk_reader/rs" }
-jpk_reader = { git = "https://github.com/bicarlsen/jpk_reader", branch = "dev" }
+jpk_reader = { path = "../../jpk_reader/rs" }
+# jpk_reader = { git = "https://github.com/bicarlsen/jpk_reader", branch = "dev" }
 polars = { workspace = true, features = ["polars-io"] }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = [
     "env-filter",
 ], optional = true }
-# iced_aksel = "0.2.0"
-iced_aksel = { git = "https://github.com/QuistHQ/iced_aksel", branch = "shape-interactivity" }
+iced_aksel = "0.3.0"
 tokio = { version = "1.49.0", features = ["full"] }
 itertools.workspace = true
 analysis.workspace = true

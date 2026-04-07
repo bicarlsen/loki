@@ -3,8 +3,6 @@ use iced_aksel as aksel;
 use palette::IntoColor;
 use polars::prelude::{self as pl};
 
-use crate::Message;
-
 type PlotValue = f64;
 pub type ValueAxisId = u8;
 
@@ -56,13 +54,13 @@ impl Default for IndexValues {
 }
 
 #[derive(Default, Debug, Clone)]
-struct IndexAxis {
+pub struct IndexAxis {
     scale: AxisScale,
     values: IndexValues,
 }
 
-#[derive(Debug, Debug, Clone)]
-struct ValueAxis {
+#[derive(Debug, Clone)]
+pub struct ValueAxis {
     id: ValueAxisId,
     scale: AxisScale,
     position: aksel::axis::Position,
@@ -105,192 +103,119 @@ impl ValueAxis {
     }
 }
 
-#[derive(Default, Clone, Debug)]
-pub struct AxesIndexX {
-    x: IndexAxis,
-    y: Vec<ValueAxis>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct InvalidValueAxisToIndexAxis;
-impl TryFrom<AxesIndexXY> for AxesIndexX {
-    type Error = InvalidValueAxisToIndexAxis;
-    fn try_from(value: AxesIndexXY) -> Result<Self, Self::Error> {
-        let AxesIndexXY { x, y } = value;
-        let y_vals = match y.values {
-            IndexValues::Index => return Err(Self::Error),
-            IndexValues::Series(col) => col,
-        };
-        let y = ValueAxis {
-            id: 0,
-            scale: y.scale,
-            position: aksel::axis::Position::Left,
-            traces: trace::TraceGroup {
-                traces: vec![trace::Trace::new(0, y_vals)],
-            },
-        };
-        Ok(Self { x, y: vec![y] })
-    }
-}
-
-#[derive(Default, Clone, Debug)]
-pub struct AxesIndexXY {
-    x: IndexAxis,
-    y: IndexAxis,
-}
-
-impl From<AxesIndexX> for AxesIndexXY {
-    fn from(value: AxesIndexX) -> Self {
-        let AxesIndexX { x, y } = value;
-        assert!(y.len() > 0, "axis should not be empty");
-        assert!(y[0].traces.traces.len() > 0, "traces should not be empty");
-        let scale = y[0].scale;
-        let value_col = y[0].traces.traces[0].column().clone();
-        let y = IndexAxis {
-            scale: scale,
-            values: IndexValues::Series(value_col),
-        };
-        Self { x, y }
-    }
-}
-
 #[derive(Clone, Debug, derive_more::From)]
-pub enum AxesIndexKind {
-    X(AxesIndexX),
-    XY(AxesIndexXY),
+pub enum YAxisKind {
+    Index(IndexAxis),
+    Values(Vec<ValueAxis>),
 }
 
-#[derive(Clone, Debug)]
-pub struct Index {
-    axes: AxesIndexKind,
-    frame: Option<IndexAxis>,
+pub struct Options<Y> {
+    x: IndexAxis,
+    y: Y,
 }
 
-impl Index {
-    fn x(&self) -> &IndexAxis {
-        match &self.axes {
-            AxesIndexKind::X(axis) => &axis.x,
-            AxesIndexKind::XY(axis) => &axis.x,
-        }
-    }
-}
-
-pub struct Options<I> {
-    axes_index: I,
-    frame_index: Option<IndexAxis>,
-}
-
-impl Options<AxesIndexX> {
+impl Options<Vec<ValueAxis>> {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.index.x.values = IndexValues::Series(x_axis.into());
+        self.x.values = IndexValues::Series(x_axis.into());
         self
     }
 
     pub fn x_axis_log(&mut self) -> &mut Self {
-        self.index.x.scale = AxisScale::Log;
+        self.x.scale = AxisScale::Log;
         self
     }
 
     pub fn new_y_axis(&mut self) -> ValueAxisId {
-        let id = self.y_axes.iter().map(|ax| ax.id).max().unwrap() + 1;
-        self.y_axes.push(YAxis::new(id));
+        let id = self
+            .y
+            .iter()
+            .map(|ax| ax.id)
+            .max()
+            .map(|id| id + 1)
+            .unwrap_or_default();
+
+        self.y.push(ValueAxis::new(id));
         id
     }
 
     pub fn add_trace(&mut self, y_axis: ValueAxisId, column: impl Into<String>) -> &mut Self {
-        let ax = self.index.y.iter_mut().find(|ax| ax.id == y_axis).unwrap();
+        let ax = self
+            .y
+            .iter_mut()
+            .find(|ax| ax.id == y_axis)
+            .expect(&format!("invalid y axis: {y_axis}"));
+
         ax.add_trace(column);
         self
     }
 }
 
-impl Options<AxesIndexXY> {
-    pub fn new_index_xy() -> Self {
-        let axes_index = AxesIndexXY {
+impl Options<IndexAxis> {
+    pub fn new_index_y() -> Self {
+        Self {
             x: Default::default(),
             y: Default::default(),
-        };
-
-        Self {
-            axes_index,
-            frame_index: Default::default(),
         }
     }
 
     pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.index.x.values = IndexValues::Series(x_axis.into());
+        self.x.values = IndexValues::Series(x_axis.into());
         self
     }
 
     pub fn x_axis_log(&mut self) -> &mut Self {
-        self.index.x.scale = AxisScale::Log;
+        self.x.scale = AxisScale::Log;
         self
     }
 }
 
-impl<I> Default for Options<I> {
-    fn default() -> Options<AxesIndexX> {
+impl Default for Options<Vec<ValueAxis>> {
+    fn default() -> Self {
         Options {
-            axes_index: AxesIndexX::default(),
-            frame_index: Default::default(),
+            x: Default::default(),
+            y: Default::default(),
         }
     }
 }
 
 pub struct Settings {
-    index: Index,
+    x: IndexAxis,
+    y: YAxisKind,
 }
 
-impl<I> From<Options<I>> for Settings
+impl<Y> From<Options<Y>> for Settings
 where
-    I: Into<AxesIndexKind>,
+    Y: Into<YAxisKind>,
 {
-    fn from(value: Options<I>) -> Self {
-        let Options {
-            axes_index,
-            frame_index,
-        } = value;
+    fn from(value: Options<Y>) -> Self {
+        let Options { x, y } = value;
 
-        let index = Index {
-            axes: axes_index.into(),
-            frame: frame_index,
-        };
-
-        Self { index }
+        Self { x, y: y.into() }
     }
 }
 
 #[derive(Debug, Clone, derive_more::From)]
 pub enum Message {
     SetTitle(String),
-    UpdateFrameIndex(IndexValues),
     DataframeChange(pl::DataFrame),
+    UpdateXAxisValues(IndexValues),
+    XAxisValuesUpdated,
     #[from]
     Data(data::Message),
     #[from]
-    IndexX(MessageIndexX),
-    #[from]
-    IndexXY(MessageIndexXY),
+    YAxis(MessageYAxis),
 }
 
 #[derive(Debug, Clone, derive_more::From)]
-pub enum MessageIndexX {
-    UpdateXAxisValues(IndexValues),
-    XAxisValuesUpdated,
+pub enum MessageYAxis {
     TraceGroup {
         axis: ValueAxisId,
         message: trace::GroupMessage,
     },
-}
-
-#[derive(Debug, Clone, derive_more::From)]
-pub enum MessageIndexXY {
-    UpdateXAxisValues(IndexValues),
-    XAxisValuesUpdated,
 }
 
 pub struct State {
@@ -298,41 +223,35 @@ pub struct State {
     chart: aksel::State<&'static str, PlotValue>,
     data: aksel::Cached<data::State>,
     title: String,
-    index: Index,
 }
 
 impl State {
-    pub fn new<I>(dataframe: pl::DataFrame, options: Options<I>) -> Result<Self, ()> {
+    pub fn new<Y>(dataframe: pl::DataFrame, options: Options<Y>) -> Result<Self, ()>
+    where
+        Y: Into<YAxisKind>,
+    {
+        let default: Settings = options.into();
         let mut chart = aksel::State::new();
-        chart.set_axis(
-            X_AXIS_ID,
-            index_axis_to_aksel(&options.index.axes, &dataframe),
-        );
+        chart.set_axis(X_AXIS_ID, index_axis_to_aksel(&default.x, &dataframe));
 
-        let default = options.into();
-        let index = default.index.clone();
+        match &default.y {
+            YAxisKind::Index(index_axis) => todo!(),
+            YAxisKind::Values(items) => {
+                for axis in items.iter() {
+                    let id = axis.aksel_id();
+                    let axis = value_axis_to_aksel(axis, &dataframe);
+                    chart.set_axis(id, axis);
+                }
+            }
+        }
 
+        let data = data::State::new(dataframe, default.x.clone(), default.y.clone());
         Ok(Self {
             default,
             chart,
             data: aksel::Cached::new(data),
             title: "".to_string(),
-            index,
         })
-    }
-
-    fn init_index_from_options(settings: &Settings) -> Index {
-        match settings.axes {}
-
-        for axis in options.y_axes.iter() {
-            let id = axis.aksel_id();
-            let axis = value_axis_to_aksel(axis, &dataframe);
-            chart.set_axis(id, axis);
-        }
-
-        let x_axis = options.index.axes.x.clone();
-        let y_axes = options.index.axes.y.clone();
-        let data = data::State::new(dataframe, x_axis, y_axes);
     }
 
     pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
@@ -346,23 +265,24 @@ impl State {
             Message::SetTitle(_) => todo!(),
             Message::UpdateXAxisValues(value) => self.update_x_axis_values(value),
             Message::XAxisValuesUpdated => self.rescale_xaxis(),
-            Message::TraceGroup { axis, message } => self.update_trace_group(axis, message),
             Message::DataframeChange(dataframe) => self.dataframe_change(dataframe),
             Message::Data(message) => self.update_data(message),
-            Message::UpdateFrameIndex(index_values) => todo!(),
+            Message::YAxis(MessageYAxis::TraceGroup { axis, message }) => {
+                self.update_trace_group(axis, message)
+            }
         }
     }
 
     fn update_x_axis_values(&mut self, values: IndexValues) -> iced::Task<Message> {
         // TODO: account for logarithmic scale
         let data = self.data.edit();
-        data.index.values = values;
+        data.x_axis.values = values;
         iced::Task::done(Message::XAxisValuesUpdated)
     }
 
     fn rescale_xaxis(&mut self) -> iced::Task<Message> {
         let data = self.data.get();
-        let axis = index_axis_to_aksel(data.index.x(), &data.df);
+        let axis = index_axis_to_aksel(&data.x_axis, &data.df);
         self.chart.set_axis(X_AXIS_ID, axis);
         iced::Task::none()
     }
@@ -389,17 +309,20 @@ impl State {
                 let data = self.data.edit();
                 let ax = data.y_axis_mut(axis).expect("axis should exist");
                 let bounds_change_task = match trace_message {
-                    trace::TraceMessage::ColumnChanged => iced::Task::done(Message::TraceGroup {
-                        axis,
-                        message: trace::GroupMessage::BoundsChanged,
-                    }),
+                    trace::TraceMessage::ColumnChanged => iced::Task::done(
+                        MessageYAxis::TraceGroup {
+                            axis,
+                            message: trace::GroupMessage::BoundsChanged,
+                        }
+                        .into(),
+                    ),
                     _ => iced::Task::none(),
                 };
 
                 iced::Task::batch([
                     ax.traces
                         .update(message)
-                        .map(move |message| Message::TraceGroup { axis, message }),
+                        .map(move |message| MessageYAxis::TraceGroup { axis, message }.into()),
                     bounds_change_task,
                 ])
             }
@@ -408,7 +331,7 @@ impl State {
                 let ax = data.y_axis_mut(axis).expect("axis should exist");
                 ax.traces
                     .update(message)
-                    .map(move |message| Message::TraceGroup { axis, message })
+                    .map(move |message| MessageYAxis::TraceGroup { axis, message }.into())
             }
         }
     }
@@ -425,54 +348,65 @@ impl State {
             .map(|name| name.to_string())
             .collect::<Vec<_>>();
 
-        if let IndexValues::Series(label) = &data.index.values {
+        if let IndexValues::Series(label) = &data.x_axis.values {
             if !columns.contains(label) {
-                if let IndexValues::Series(default) = &self.default.x_axis.values {
-                    data.index.values.insert(default.clone());
+                if let IndexValues::Series(default) = &self.default.x.values {
+                    data.x_axis.values.insert(default.clone());
                 } else {
-                    data.index.values.take();
+                    data.x_axis.values.take();
                 }
             }
         }
         tasks.push(iced::Task::done(Message::XAxisValuesUpdated));
 
-        for axis in data.y_axes.iter_mut() {
-            axis.traces.retain(|trace| columns.contains(trace.column()));
+        match &mut data.y_axis {
+            YAxisKind::Index(index_axis) => todo!(),
+            YAxisKind::Values(items) => {
+                // for axis in items.iter_mut() {
+                //     axis.traces.retain(|trace| columns.contains(trace.column()));
 
-            for trace in axis.traces.iter_mut() {
-                if let trace::Color::Column(column) = trace.color() {
-                    if !columns.contains(&column) {
-                        trace.set_color(trace::Color::Default);
-                    }
-                }
+                //     for trace in axis.traces.iter_mut() {
+                //         if let trace::Color::Column(column) = trace.color() {
+                //             if !columns.contains(&column) {
+                //                 trace.set_color(trace::Color::Default);
+                //             }
+                //         }
+                //     }
+
+                //     if axis.traces.len() == 0 {
+                //         let mut add = vec![];
+                //         if let Some(default) = self.default.y.iter().find(|ax| ax.id == axis.id) {
+                //             for trace in default.traces.iter() {
+                //                 if columns.contains(trace.column()) {
+                //                     add.push(trace.clone());
+                //                 }
+                //             }
+                //         }
+                //         if add.len() == 0 {
+                //             axis.add_trace(&columns[0]);
+                //         } else {
+                //             axis.traces.extend(add);
+                //         }
+                //     }
+
+                //     tasks.extend([
+                //         iced::Task::done(
+                //             MessageYAxis::TraceGroup {
+                //                 axis: axis.id,
+                //                 message: trace::GroupMessage::TracesUpdated,
+                //             }
+                //             .into(),
+                //         ),
+                //         iced::Task::done(
+                //             MessageYAxis::TraceGroup {
+                //                 axis: axis.id,
+                //                 message: trace::GroupMessage::BoundsChanged,
+                //             }
+                //             .into(),
+                //         ),
+                //     ]);
+                // }
             }
-
-            if axis.traces.len() == 0 {
-                let mut add = vec![];
-                if let Some(default) = self.default.y_axes.iter().find(|ax| ax.id == axis.id) {
-                    for trace in default.traces.iter() {
-                        if columns.contains(trace.column()) {
-                            add.push(trace.clone());
-                        }
-                    }
-                }
-                if add.len() == 0 {
-                    axis.add_trace(&columns[0]);
-                } else {
-                    axis.traces.extend(add);
-                }
-            }
-
-            tasks.extend([
-                iced::Task::done(Message::TraceGroup {
-                    axis: axis.id,
-                    message: trace::GroupMessage::TracesUpdated,
-                }),
-                iced::Task::done(Message::TraceGroup {
-                    axis: axis.id,
-                    message: trace::GroupMessage::BoundsChanged,
-                }),
-            ]);
         }
 
         iced::Task::batch(tasks)
@@ -538,78 +472,32 @@ impl State {
         let plot = plot.map(Message::Data);
         let axes_controls = self.axes_controls();
 
-        let frame_control = self
-            .index
-            .frame
-            .map(|axis| self.pl_index_axis(&axis.values, Message::UpdateFrameIndex));
-
-        iced::widget::column![plot, axes_controls, frame_control].into()
+        iced::widget::column![plot, axes_controls].into()
     }
 
     fn axes_controls(&self) -> iced::Element<'_, Message> {
-        match self.index.axes {
-            AxesIndexKind::X(axes_index_x) => self.axes_controls_index_x(),
-            AxesIndexKind::XY(axes_index_xy) => self.axes_controls_index_xy(),
-        }
-    }
-
-    fn axes_controls_index_x(&self) -> iced::Element<'_, Message> {
         let data = self.data.get();
-        let columns = data
-            .df
-            .schema()
-            .iter()
-            .map(|(name, _)| name.to_string())
-            .collect::<Vec<_>>();
-
-        let yaxis_groups = data.y_axes.iter().map(|axis| {
-            axis.traces
-                .view(columns.clone())
-                .map(|message| Message::TraceGroup {
-                    axis: axis.id,
-                    message: message,
-                })
-        });
-
-        // let columns = std::iter::once("".to_string())
-        //     .chain(columns.clone())
-        //     .collect::<Vec<_>>();
-        // let pl_xaxis = iced::widget::pick_list(
-        //     columns,
-        //     match &data.index.values {
-        //         IndexValues::Index => None,
-        //         IndexValues::Series(column) => Some(column.clone()),
-        //     },
-        //     |selection| {
-        //         let values = if selection.is_empty() {
-        //             IndexValues::Index
-        //         } else {
-        //             IndexValues::Series(selection)
-        //         };
-
-        //         Message::UpdateXAxisValues(values)
-        //     },
-        // )
-        // .placeholder("<index>");
-        let pl_xaxis = self.pl_index_axis(&data.index.values, Message::UpdateXAxisValues);
+        let pl_xaxis = self.pl_index_axis(&data.x_axis.values, Message::UpdateXAxisValues);
         let pl_xaxis = iced::widget::row![iced::widget::text("x-axis"), pl_xaxis].into();
 
-        iced::widget::column(std::iter::once(pl_xaxis).chain(yaxis_groups)).into()
+        let yaxis = match &data.y_axis {
+            YAxisKind::Index(axis) => todo!(),
+            YAxisKind::Values(items) => items
+                .iter()
+                .map(|axis| self.pl_values_axis(axis))
+                .collect::<Vec<_>>(),
+        };
+
+        iced::widget::column(std::iter::once(pl_xaxis).chain(yaxis)).into()
     }
 
-    fn axes_controls_index_xy(&self) -> iced::Element<'_, Message> {
-        let data = self.data.get();
-        let pl_xaxis = self.pl_index_axis(&data.index.x().values, Message::UpdateXAxisValues);
-        let pl_yaxis = self.pl_index_axis(&data.index.x().values, Message::UpdateYAxisValues);
-        let pl_xaxis = iced::widget::row![iced::widget::text("x-axis"), pl_xaxis].into();
-        let pl_yaxis = iced::widget::row![iced::widget::text("x-axis"), pl_yaxis].into();
-
-        iced::widget::column![pl_xaxis, pl_yaxis].into()
-    }
-
-    fn pl_index_axis(&self, selected: &IndexValues, message: F) -> iced::Element<'_, Message>
+    fn pl_index_axis<'a, F>(
+        &'a self,
+        selected: &'a IndexValues,
+        message: F,
+    ) -> iced::Element<'a, Message>
     where
-        F: FnOnce(IndexValues) -> Message,
+        F: Fn(IndexValues) -> Message + 'a,
     {
         let data = self.data.get();
         let columns = data
@@ -628,7 +516,7 @@ impl State {
                 IndexValues::Index => None,
                 IndexValues::Series(column) => Some(column.clone()),
             },
-            |selection| {
+            move |selection| {
                 let values = if selection.is_empty() {
                     IndexValues::Index
                 } else {
@@ -640,6 +528,25 @@ impl State {
         )
         .placeholder("<index>")
         .into()
+    }
+
+    fn pl_values_axis<'a>(&'a self, axis: &'a ValueAxis) -> iced::Element<'a, Message> {
+        let data = self.data.get();
+        let columns = data
+            .df
+            .schema()
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>();
+
+        let axis_id = axis.id;
+        axis.traces.view(columns.clone()).map(move |message| {
+            MessageYAxis::TraceGroup {
+                axis: axis_id,
+                message,
+            }
+            .into()
+        })
     }
 }
 
@@ -1057,20 +964,20 @@ pub(super) mod data {
 
     pub struct State {
         pub(super) df: pl::DataFrame,
-        pub(super) index: super::Index,
-        pub(super) y_axes: Vec<super::ValueAxis>,
+        pub(super) x_axis: super::IndexAxis,
+        pub(super) y_axis: super::YAxisKind,
         points: Points,
         pub(super) hovered_id: Option<aksel::interaction::Id>,
         pub(super) selected_id: Option<aksel::interaction::Id>,
     }
 
     impl State {
-        pub fn new(df: pl::DataFrame, index: super::Index, y_axes: Vec<super::ValueAxis>) -> Self {
+        pub fn new(df: pl::DataFrame, x_axis: super::IndexAxis, y_axis: super::YAxisKind) -> Self {
             let points = Points::new(df.height());
             Self {
                 df,
-                index,
-                y_axes,
+                x_axis,
+                y_axis,
                 points,
                 hovered_id: Default::default(),
                 selected_id: Default::default(),
@@ -1078,11 +985,17 @@ pub(super) mod data {
         }
 
         pub fn y_axis(&self, axis: super::ValueAxisId) -> Option<&super::ValueAxis> {
-            self.y_axes.iter().find(|ax| ax.id == axis)
+            match &self.y_axis {
+                super::YAxisKind::Index(index_axis) => None,
+                super::YAxisKind::Values(items) => items.iter().find(|ax| ax.id == axis),
+            }
         }
 
         pub fn y_axis_mut(&mut self, axis: super::ValueAxisId) -> Option<&mut super::ValueAxis> {
-            self.y_axes.iter_mut().find(|ax| ax.id == axis)
+            match &mut self.y_axis {
+                super::YAxisKind::Index(index_axis) => None,
+                super::YAxisKind::Values(items) => items.iter_mut().find(|ax| ax.id == axis),
+            }
         }
 
         pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
@@ -1186,9 +1099,9 @@ pub(super) mod data {
             let y = self.df.column(column_label).unwrap();
             let y = super::column_to_values_f64(y);
 
-            let x = match &self.index.values {
+            let x = match &self.x_axis.values {
                 super::IndexValues::Series(column) => {
-                    let x = self.df.column(column).unwrap();
+                    let x = self.df.column(&column).unwrap();
                     super::column_to_values_f64(x)
                 }
                 super::IndexValues::Index => (0..self.df.height())
@@ -1284,9 +1197,16 @@ pub(super) mod data {
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             theme: &iced::advanced::graphics::core::Theme,
         ) {
-            for axis in self.y_axes.iter() {
-                let base_color = theme.palette().primary;
-                self.draw_axis(plot, base_color, axis);
+            match &self.y_axis {
+                super::YAxisKind::Index(index_axis) => {
+                    todo!()
+                }
+                super::YAxisKind::Values(items) => {
+                    for axis in items.iter() {
+                        let base_color = theme.palette().primary;
+                        self.draw_axis(plot, base_color, axis);
+                    }
+                }
             }
         }
     }
