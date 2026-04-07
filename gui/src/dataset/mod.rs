@@ -399,21 +399,14 @@ impl Dataset {
 mod settings {
     #[derive(Debug, Clone)]
     pub enum Message {
-        EnableIndexY(bool),
-        EnableIndexFrame(bool),
-    }
-
-    pub enum Action {
-        SetIndex {},
+        SetYAxisIndex(bool),
     }
 
     #[derive(Default)]
     #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
     pub struct Settings {
         /// y-axis as index.
-        index_y: bool,
-        /// frame as index.
-        index_frame: bool,
+        y_axis_index: bool,
     }
 
     impl Settings {
@@ -423,12 +416,8 @@ mod settings {
 
         pub fn update(&mut self, message: Message) -> iced::Task<Message> {
             match message {
-                Message::EnableIndexY(enabled) => {
-                    self.index_y = enabled;
-                    iced::Task::none()
-                }
-                Message::EnableIndexFrame(enabled) => {
-                    self.index_frame = enabled;
+                Message::SetYAxisIndex(enabled) => {
+                    self.y_axis_index = enabled;
                     iced::Task::none()
                 }
             }
@@ -437,15 +426,11 @@ mod settings {
         pub fn view(&self) -> iced::Element<'_, Message> {
             let title = iced::widget::text("Settings");
 
-            let cb_index_y = iced::widget::checkbox(self.index_y).on_toggle(Message::EnableIndexY);
+            let cb_index_y =
+                iced::widget::checkbox(self.y_axis_index).on_toggle(Message::SetYAxisIndex);
             let inp_index_y = iced::widget::row![cb_index_y, iced::widget::text("y-axis index")];
 
-            let cb_index_frame =
-                iced::widget::checkbox(self.index_frame).on_toggle(Message::EnableIndexFrame);
-            let inp_index_frame =
-                iced::widget::row![cb_index_frame, iced::widget::text("Frame index")];
-
-            iced::widget::column![title, inp_index_y, inp_index_frame].into()
+            iced::widget::column![title, inp_index_y].into()
         }
     }
 }
