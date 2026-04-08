@@ -298,6 +298,14 @@ impl Dataset {
                 iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
             }
             Message::Settings(message) => {
+                if let settings::Message::SetYAxisIndex(index) = &message {
+                    let mode = match index {
+                        true => plot::YAxisMode::Index,
+                        false => plot::YAxisMode::Values,
+                    };
+                    self.plot.y_axis_mode(mode);
+                }
+                
                 if let Some((_, settings)) = self.children.settings.as_mut() {
                     settings.update(message).map(Message::Settings)
                 } else {

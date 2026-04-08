@@ -103,10 +103,25 @@ impl ValueAxis {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum YAxisMode {
+    Index,
+    Values,
+}
+
 #[derive(Clone, Debug, derive_more::From)]
 pub enum YAxisKind {
     Index(IndexAxis),
     Values(Vec<ValueAxis>),
+}
+
+impl YAxisKind {
+    pub fn mode(&self) -> YAxisMode {
+        match self {
+            YAxisKind::Index(_) => YAxisMode::Index,
+            YAxisKind::Values(_) => YAxisMode::Values,
+        }
+    }
 }
 
 pub struct Options<Y> {
@@ -212,6 +227,12 @@ pub enum Message {
 
 #[derive(Debug, Clone, derive_more::From)]
 pub enum MessageYAxis {
+    /// # Notes
+    /// Only if axis is in index mode
+    UpdateIndexValues(IndexValues),
+    IndexValuesUpdated,
+    /// # Notes
+    /// Only if axis is in values mode
     TraceGroup {
         axis: ValueAxisId,
         message: trace::GroupMessage,
@@ -232,7 +253,10 @@ impl State {
     {
         let default: Settings = options.into();
         let mut chart = aksel::State::new();
-        chart.set_axis(X_AXIS_ID, index_axis_to_aksel(&default.x, &dataframe));
+        chart.set_axis(
+            X_AXIS_ID,
+            index_axis_to_aksel(&default.x, &dataframe, aksel::axis::Position::Bottom),
+        );
 
         match &default.y {
             YAxisKind::Index(index_axis) => todo!(),
@@ -260,6 +284,12 @@ impl State {
 }
 
 impl State {
+    pub fn y_axis_mode(&mut self, mode: YAxisMode) {
+        self.data.edit().y_axis_mode(mode)
+    }
+}
+
+impl State {
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::SetTitle(_) => todo!(),
@@ -267,9 +297,7 @@ impl State {
             Message::XAxisValuesUpdated => self.rescale_xaxis(),
             Message::DataframeChange(dataframe) => self.dataframe_change(dataframe),
             Message::Data(message) => self.update_data(message),
-            Message::YAxis(MessageYAxis::TraceGroup { axis, message }) => {
-                self.update_trace_group(axis, message)
-            }
+            Message::YAxis(message) => self.update_y_axis(message),
         }
     }
 
@@ -282,7 +310,7 @@ impl State {
 
     fn rescale_xaxis(&mut self) -> iced::Task<Message> {
         let data = self.data.get();
-        let axis = index_axis_to_aksel(&data.x_axis, &data.df);
+        let axis = index_axis_to_aksel(&data.x_axis, &data.df, aksel::axis::Position::Bottom);
         self.chart.set_axis(X_AXIS_ID, axis);
         iced::Task::none()
     }
@@ -446,6 +474,31 @@ impl State {
             _ => self.data.edit().update(message).map(Message::Data),
         }
     }
+
+    fn rescale_yaxis(&mut self) -> iced::Task<Message> {
+        let data = self.data.get();
+        let YAxisKind::Index(axis) = &data.y_axis else {
+            panic!("y axis in invalid state")
+        };
+        let axis = index_axis_to_aksel(&axis, &data.df, aksel::axis::Position::Left);
+        self.chart.set_axis(Y_AXIS_IDS[0], axis);
+        iced::Task::none()
+    }
+
+    fn update_y_axis(&mut self, message: MessageYAxis) -> iced::Task<Message> {
+        match message {
+            MessageYAxis::TraceGroup { axis, message } => self.update_trace_group(axis, message),
+            MessageYAxis::UpdateIndexValues(values) => {
+                let data = self.data.edit();
+                let YAxisKind::Index(axis) = &mut data.y_axis else {
+                    panic!("y axis in invalid state");
+                };
+                axis.values = values;
+                iced::Task::done(MessageYAxis::IndexValuesUpdated.into())
+            }
+            MessageYAxis::IndexValuesUpdated => self.rescale_yaxis(),
+        }
+    }
 }
 
 impl State {
@@ -478,17 +531,23 @@ impl State {
     fn axes_controls(&self) -> iced::Element<'_, Message> {
         let data = self.data.get();
         let pl_xaxis = self.pl_index_axis(&data.x_axis.values, Message::UpdateXAxisValues);
-        let pl_xaxis = iced::widget::row![iced::widget::text("x-axis"), pl_xaxis].into();
+        let pl_xaxis = iced::widget::row![iced::widget::text("x-axis"), pl_xaxis];
 
         let yaxis = match &data.y_axis {
-            YAxisKind::Index(axis) => todo!(),
-            YAxisKind::Values(items) => items
-                .iter()
-                .map(|axis| self.pl_values_axis(axis))
-                .collect::<Vec<_>>(),
+            YAxisKind::Index(axis) => self.pl_index_axis(&axis.values, |values| {
+                MessageYAxis::UpdateIndexValues(values).into()
+            }),
+            YAxisKind::Values(items) => {
+                let controls = items
+                    .iter()
+                    .map(|axis| self.pl_values_axis(axis))
+                    .collect::<Vec<_>>();
+
+                iced::widget::column(controls).into()
+            }
         };
 
-        iced::widget::column(std::iter::once(pl_xaxis).chain(yaxis)).into()
+        iced::widget::column![pl_xaxis, yaxis].into()
     }
 
     fn pl_index_axis<'a, F>(
@@ -648,6 +707,10 @@ mod trace {
                 GroupMessage::TraceRemoved => iced::Task::done(GroupMessage::BoundsChanged),
                 GroupMessage::TracesUpdated => iced::Task::none(),
             }
+        }
+
+        pub fn get_trace(&self, id: TraceId) -> Option<&Trace> {
+            self.traces.iter().find(|trace| trace.id == id)
         }
 
         pub fn get_trace_mut(&mut self, id: TraceId) -> Option<&mut Trace> {
@@ -906,7 +969,7 @@ mod trace {
 
 pub(super) mod data {
     use super::trace;
-    use crate::dataset::plot::{color_to_lch, lch_to_color};
+    use crate::dataset::plot::{YAxisKind, color_to_lch, lch_to_color};
     use iced_aksel::{self as aksel, interaction::IntoArea};
     use palette::ShiftHue;
     use polars::prelude as pl;
@@ -1007,6 +1070,55 @@ pub(super) mod data {
             let _ = self.selected_id.take();
             self.points = Points::new(dataframe.height());
             self.df = dataframe;
+        }
+
+        pub fn y_axis_mode(&mut self, mode: super::YAxisMode) {
+            use super::YAxisMode;
+
+            match (mode, self.y_axis.mode()) {
+                (YAxisMode::Index, YAxisMode::Index) | (YAxisMode::Values, YAxisMode::Values) => {}
+                (YAxisMode::Index, YAxisMode::Values) => self.convert_y_axis_to_index(),
+                (YAxisMode::Values, YAxisMode::Index) => self.convert_y_axis_to_values(),
+            }
+        }
+
+        fn convert_y_axis_to_values(&mut self) {
+            let y_axis = match &mut self.y_axis {
+                YAxisKind::Values(_) => return,
+                YAxisKind::Index(axis) => axis,
+            };
+
+            let col = match &y_axis.values {
+                super::IndexValues::Index => todo!(),
+                super::IndexValues::Series(col) => col.clone(),
+            };
+            let mut traces = super::trace::TraceGroup::default();
+            traces.add_trace(col);
+            let axis = super::ValueAxis {
+                id: 0,
+                scale: y_axis.scale,
+                position: aksel::axis::Position::Left,
+                traces,
+            };
+            self.y_axis = YAxisKind::Values(vec![axis]);
+        }
+
+        fn convert_y_axis_to_index(&mut self) {
+            let y_axis = match &mut self.y_axis {
+                YAxisKind::Index(_) => return,
+                YAxisKind::Values(items) => &items[0],
+            };
+
+            let trace = y_axis
+                .traces
+                .get_trace(0)
+                .expect("trace group should not be empty");
+            let values = super::IndexValues::Series(trace.column().clone());
+            let axis = super::IndexAxis {
+                scale: y_axis.scale,
+                values,
+            };
+            self.y_axis = YAxisKind::Index(axis)
         }
     }
 
@@ -1189,6 +1301,53 @@ pub(super) mod data {
 
             plot.push_interaction(id.clone(), interaction);
         }
+
+        fn draw_heatmap(
+            &self,
+            y_axis: &super::IndexValues,
+            plot: &mut aksel::Plot<super::PlotValue, Message>,
+            theme: &iced::advanced::graphics::core::Theme,
+        ) {
+            let x = match &self.x_axis.values {
+                super::IndexValues::Series(column) => {
+                    let x = self.df.column(&column).unwrap();
+                    super::column_to_values_f64(x)
+                }
+                super::IndexValues::Index => (0..self.df.height())
+                    .map(|x| x as super::PlotValue)
+                    .collect::<Vec<_>>(),
+            };
+            let y = match y_axis {
+                super::IndexValues::Series(column) => {
+                    let x = self.df.column(&column).unwrap();
+                    super::column_to_values_f64(x)
+                }
+                super::IndexValues::Index => (0..self.df.height())
+                    .map(|x| x as super::PlotValue)
+                    .collect::<Vec<_>>(),
+            };
+
+            // TODO
+            let marker = super::trace::Marker::Circle;
+            let marker_size = 10.;
+            let colors = vec![iced::Color::from_rgb(1., 1., 1.); x.len()];
+            let mut hovered = None;
+            let points = itertools::izip!(self.points.iter_idx(), x, y, colors);
+            for (iid, x, y, color) in points {
+                if let Some(hovered_id) = &self.hovered_id {
+                    if iid == hovered_id {
+                        let _ = hovered.insert((iid, x, y, color));
+                        continue;
+                    }
+                }
+
+                Self::draw_point(plot, marker, iid, x, y, color, marker_size);
+            }
+
+            if let Some((id, x, y, color)) = hovered {
+                Self::draw_point(plot, marker, id, x, y, color, marker_size);
+            }
+        }
     }
 
     impl aksel::PlotData<super::PlotValue, Message> for State {
@@ -1198,8 +1357,8 @@ pub(super) mod data {
             theme: &iced::advanced::graphics::core::Theme,
         ) {
             match &self.y_axis {
-                super::YAxisKind::Index(index_axis) => {
-                    todo!()
+                super::YAxisKind::Index(axis) => {
+                    self.draw_heatmap(&axis.values, plot, theme);
                 }
                 super::YAxisKind::Values(items) => {
                     for axis in items.iter() {
@@ -1212,13 +1371,15 @@ pub(super) mod data {
     }
 }
 
-fn index_axis_to_aksel(axis: &IndexAxis, df: &pl::DataFrame) -> aksel::Axis<PlotValue> {
-    const POSITION: aksel::axis::Position = aksel::axis::Position::Bottom;
-
+fn index_axis_to_aksel(
+    axis: &IndexAxis,
+    df: &pl::DataFrame,
+    position: aksel::axis::Position,
+) -> aksel::Axis<PlotValue> {
     match &axis.values {
         IndexValues::Index => aksel::Axis::new(
             aksel::scale::Linear::new(0.0, df.height() as PlotValue),
-            POSITION,
+            position,
         )
         .with_tick_renderer(axis_renderer_ticks()),
         IndexValues::Series(name) => {
@@ -1226,10 +1387,10 @@ fn index_axis_to_aksel(axis: &IndexAxis, df: &pl::DataFrame) -> aksel::Axis<Plot
             let (min, max) = column_minmax_f64(column);
             match axis.scale {
                 AxisScale::Linear => {
-                    aksel::Axis::new(aksel::scale::Linear::new(min, max), POSITION)
+                    aksel::Axis::new(aksel::scale::Linear::new(min, max), position)
                         .with_tick_renderer(axis_renderer_ticks())
                 }
-                AxisScale::Log => aksel::Axis::new(aksel::scale::Linear::new(min, max), POSITION)
+                AxisScale::Log => aksel::Axis::new(aksel::scale::Linear::new(min, max), position)
                     .with_tick_renderer(axis_renderer_ticks()),
             }
         }
