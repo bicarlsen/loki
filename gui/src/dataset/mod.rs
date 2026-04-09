@@ -298,14 +298,10 @@ impl Dataset {
                 iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
             }
             Message::Settings(message) => {
-                if let settings::Message::SetYAxisIndex(index) = &message {
-                    let mode = match index {
-                        true => plot::YAxisMode::Index,
-                        false => plot::YAxisMode::Values,
-                    };
-                    self.plot.y_axis_mode(mode);
+                if let settings::Message::SetMode(mode) = &message {
+                    self.plot.mode(mode);
                 }
-                
+
                 if let Some((_, settings)) = self.children.settings.as_mut() {
                     settings.update(message).map(Message::Settings)
                 } else {
@@ -405,16 +401,18 @@ impl Dataset {
 }
 
 mod settings {
+    use crate::dataset::plot;
+
     #[derive(Debug, Clone)]
     pub enum Message {
-        SetYAxisIndex(bool),
+        SetMode(plot::Mode),
     }
 
     #[derive(Default)]
     #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
     pub struct Settings {
-        /// y-axis as index.
-        y_axis_index: bool,
+        /// Plot mode.
+        mode: super::plot::Mode,
     }
 
     impl Settings {
@@ -424,8 +422,8 @@ mod settings {
 
         pub fn update(&mut self, message: Message) -> iced::Task<Message> {
             match message {
-                Message::SetYAxisIndex(enabled) => {
-                    self.y_axis_index = enabled;
+                Message::SetMode(mode) => {
+                    self.mode = mode;
                     iced::Task::none()
                 }
             }
@@ -434,11 +432,14 @@ mod settings {
         pub fn view(&self) -> iced::Element<'_, Message> {
             let title = iced::widget::text("Settings");
 
-            let cb_index_y =
-                iced::widget::checkbox(self.y_axis_index).on_toggle(Message::SetYAxisIndex);
-            let inp_index_y = iced::widget::row![cb_index_y, iced::widget::text("y-axis index")];
+            let pl_mode = iced::widget::pick_list(
+                [super::plot::Mode::Scatter, super::plot::Mode::Heatmap],
+                Some(self.mode),
+                Message::SetMode,
+            );
+            let pl_mode = iced::widget::row![iced::widget::text("Plot mode"), pl_mode];
 
-            iced::widget::column![title, inp_index_y].into()
+            iced::widget::column![title, pl_mode].into()
         }
     }
 }

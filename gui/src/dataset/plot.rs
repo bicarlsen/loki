@@ -59,6 +59,24 @@ pub struct IndexAxis {
     values: IndexValues,
 }
 
+impl From<ValueAxis> for IndexAxis {
+    fn from(value: ValueAxis) -> Self {
+        let ValueAxis {
+            id,
+            scale,
+            position,
+            traces,
+        } = value;
+        assert_ne!(traces.len(), 0, "trace group should not be empty");
+        let col = traces[0].column().clone();
+
+        Self {
+            scale,
+            values: IndexValues::Series(col),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ValueAxis {
     id: ValueAxisId,
@@ -103,49 +121,126 @@ impl ValueAxis {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum YAxisMode {
-    Index,
-    Values,
+#[derive(Debug)]
+struct IndexConversionError;
+impl TryFrom<IndexAxis> for ValueAxis {
+    type Error = IndexConversionError;
+    fn try_from(value: IndexAxis) -> Result<Self, Self::Error> {
+        let IndexAxis { scale, values } = value;
+        let trace = match values {
+            IndexValues::Index => return Err(IndexConversionError),
+            IndexValues::Series(col) => trace::Trace::new(0, col),
+        };
+        let traces = trace::TraceGroup {
+            traces: vec![trace],
+        };
+
+        Ok(Self {
+            id: 0,
+            scale,
+            position: aksel::axis::Position::Left,
+            traces,
+        })
+    }
 }
 
-#[derive(Clone, Debug, derive_more::From)]
-pub enum YAxisKind {
-    Index(IndexAxis),
-    Values(Vec<ValueAxis>),
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
+pub enum Mode {
+    /// Generic scatter plot with (possibly) multiple traces.
+    #[default]
+    Scatter,
+    /// 2D heat map, with coloring for contrast.
+    Heatmap,
 }
 
-impl YAxisKind {
-    pub fn mode(&self) -> YAxisMode {
+impl ToString for Mode {
+    fn to_string(&self) -> String {
         match self {
-            YAxisKind::Index(_) => YAxisMode::Index,
-            YAxisKind::Values(_) => YAxisMode::Values,
+            Mode::Scatter => "Scatter".to_string(),
+            Mode::Heatmap => "Heatmap".to_string(),
         }
     }
 }
 
-pub struct Options<Y> {
+#[derive(Clone, Debug, Default)]
+struct IndexScatter {
     x: IndexAxis,
-    y: Y,
+    y: Vec<ValueAxis>,
 }
 
-impl Options<Vec<ValueAxis>> {
+impl TryFrom<IndexHeatmap> for IndexScatter {
+    type Error = <ValueAxis as TryFrom<IndexAxis>>::Error;
+    fn try_from(value: IndexHeatmap) -> Result<Self, Self::Error> {
+        let IndexHeatmap { x, y } = value;
+        let y = y.try_into()?;
+        Ok(Self { x, y: vec![y] })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct IndexHeatmap {
+    x: IndexAxis,
+    y: IndexAxis,
+}
+
+impl From<IndexScatter> for IndexHeatmap {
+    fn from(value: IndexScatter) -> Self {
+        let IndexScatter { x, y } = value;
+        assert_ne!(y.len(), 0, "plot should have at least one y axis");
+        let y = y.into_iter().nth(0).unwrap().into();
+        Self { x, y }
+    }
+}
+
+#[derive(Clone, Debug, derive_more::From)]
+pub enum ModeIndex {
+    Scatter(IndexScatter),
+    Heatmap(IndexHeatmap),
+}
+
+impl ModeIndex {
+    pub fn mode(&self) -> Mode {
+        match self {
+            ModeIndex::Scatter(_) => Mode::Scatter,
+            ModeIndex::Heatmap(_) => Mode::Heatmap,
+        }
+    }
+}
+
+impl Default for ModeIndex {
+    fn default() -> Self {
+        Self::Scatter(Default::default())
+    }
+}
+
+pub struct Options<I> {
+    index: I,
+}
+
+impl Options<IndexScatter> {
+    /// Alias for [`Self::new_scatter`].
     pub fn new() -> Self {
         Self::default()
     }
 
+    pub fn new_scatter() -> Self {
+        Self::default()
+    }
+
     pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.x.values = IndexValues::Series(x_axis.into());
+        self.index.x.values = IndexValues::Series(x_axis.into());
         self
     }
 
     pub fn x_axis_log(&mut self) -> &mut Self {
-        self.x.scale = AxisScale::Log;
+        self.index.x.scale = AxisScale::Log;
         self
     }
 
     pub fn new_y_axis(&mut self) -> ValueAxisId {
         let id = self
+            .index
             .y
             .iter()
             .map(|ax| ax.id)
@@ -153,12 +248,13 @@ impl Options<Vec<ValueAxis>> {
             .map(|id| id + 1)
             .unwrap_or_default();
 
-        self.y.push(ValueAxis::new(id));
+        self.index.y.push(ValueAxis::new(id));
         id
     }
 
     pub fn add_trace(&mut self, y_axis: ValueAxisId, column: impl Into<String>) -> &mut Self {
         let ax = self
+            .index
             .y
             .iter_mut()
             .find(|ax| ax.id == y_axis)
@@ -169,47 +265,49 @@ impl Options<Vec<ValueAxis>> {
     }
 }
 
-impl Options<IndexAxis> {
-    pub fn new_index_y() -> Self {
+impl Options<IndexHeatmap> {
+    pub fn new_heatmap() -> Self {
         Self {
-            x: Default::default(),
-            y: Default::default(),
+            index: IndexHeatmap {
+                x: Default::default(),
+                y: Default::default(),
+            }
+            .into(),
         }
     }
 
     pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.x.values = IndexValues::Series(x_axis.into());
+        self.index.x.values = IndexValues::Series(x_axis.into());
         self
     }
 
     pub fn x_axis_log(&mut self) -> &mut Self {
-        self.x.scale = AxisScale::Log;
+        self.index.x.scale = AxisScale::Log;
         self
     }
 }
 
-impl Default for Options<Vec<ValueAxis>> {
+impl Default for Options<IndexScatter> {
     fn default() -> Self {
         Options {
-            x: Default::default(),
-            y: Default::default(),
+            index: Default::default(),
         }
     }
 }
 
 pub struct Settings {
-    x: IndexAxis,
-    y: YAxisKind,
+    index: ModeIndex,
 }
 
-impl<Y> From<Options<Y>> for Settings
+impl<I> From<Options<I>> for Settings
 where
-    Y: Into<YAxisKind>,
+    I: Into<ModeIndex>,
 {
-    fn from(value: Options<Y>) -> Self {
-        let Options { x, y } = value;
-
-        Self { x, y: y.into() }
+    fn from(value: Options<I>) -> Self {
+        let Options { index } = value;
+        Self {
+            index: index.into(),
+        }
     }
 }
 
@@ -242,34 +340,25 @@ pub enum MessageYAxis {
 pub struct State {
     default: Settings,
     chart: aksel::State<&'static str, PlotValue>,
-    data: aksel::Cached<data::State>,
+    data: aksel::Cached<data::Mode>,
     title: String,
 }
 
 impl State {
-    pub fn new<Y>(dataframe: pl::DataFrame, options: Options<Y>) -> Result<Self, ()>
+    pub fn new<I>(dataframe: pl::DataFrame, options: Options<I>) -> Result<Self, ()>
     where
-        Y: Into<YAxisKind>,
+        I: Into<ModeIndex>,
     {
         let default: Settings = options.into();
-        let mut chart = aksel::State::new();
-        chart.set_axis(
-            X_AXIS_ID,
-            index_axis_to_aksel(&default.x, &dataframe, aksel::axis::Position::Bottom),
-        );
+        let chart = match &default.index {
+            ModeIndex::Scatter(index) => Self::chart_scatter(&dataframe, &index),
+            ModeIndex::Heatmap(index) => todo!(),
+        };
 
-        match &default.y {
-            YAxisKind::Index(index_axis) => todo!(),
-            YAxisKind::Values(items) => {
-                for axis in items.iter() {
-                    let id = axis.aksel_id();
-                    let axis = value_axis_to_aksel(axis, &dataframe);
-                    chart.set_axis(id, axis);
-                }
-            }
-        }
-
-        let data = data::State::new(dataframe, default.x.clone(), default.y.clone());
+        let data = match &default.index {
+            ModeIndex::Scatter(index) => data::State::new(dataframe, index.clone()).into(),
+            ModeIndex::Heatmap(index) => data::State::new(dataframe, index.clone()).into(),
+        };
         Ok(Self {
             default,
             chart,
@@ -278,14 +367,53 @@ impl State {
         })
     }
 
+    fn chart_scatter(
+        dataframe: &pl::DataFrame,
+        index: &IndexScatter,
+    ) -> aksel::State<&'static str, f64> {
+        let mut chart = aksel::State::new();
+
+        chart.set_axis(
+            X_AXIS_ID,
+            index_axis_to_aksel(&index.x, dataframe, aksel::axis::Position::Bottom),
+        );
+
+        for axis in index.y.iter() {
+            let id = axis.aksel_id();
+            let axis = value_axis_to_aksel(axis, &dataframe);
+            chart.set_axis(id, axis);
+        }
+
+        chart
+    }
+
+    fn chart_heatmap(
+        dataframe: &pl::DataFrame,
+        index: &IndexHeatmap,
+    ) -> aksel::State<&'static str, f64> {
+        let mut chart = aksel::State::new();
+
+        chart.set_axis(
+            X_AXIS_ID,
+            index_axis_to_aksel(&index.x, dataframe, aksel::axis::Position::Bottom),
+        );
+
+        chart.set_axis(
+            Y_AXIS_IDS[0],
+            index_axis_to_aksel(&index.x, dataframe, aksel::axis::Position::Left),
+        );
+
+        chart
+    }
+
     pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
         self.data.get().record_idx_by_point_id(id)
     }
 }
 
 impl State {
-    pub fn y_axis_mode(&mut self, mode: YAxisMode) {
-        self.data.edit().y_axis_mode(mode)
+    pub fn mode(&mut self, mode: Mode) {
+        self.data.edit().mode(mode)
     }
 }
 
@@ -969,7 +1097,7 @@ mod trace {
 
 pub(super) mod data {
     use super::trace;
-    use crate::dataset::plot::{YAxisKind, color_to_lch, lch_to_color};
+    use crate::dataset::plot::{color_to_lch, lch_to_color};
     use iced_aksel::{self as aksel, interaction::IntoArea};
     use palette::ShiftHue;
     use polars::prelude as pl;
@@ -1025,44 +1153,53 @@ pub(super) mod data {
         }
     }
 
-    pub struct State {
+    #[derive(derive_more::From)]
+    pub enum Mode {
+        Scatter(State<super::IndexScatter>),
+        Heatmap(State<super::IndexHeatmap>),
+    }
+
+    impl Mode {
+        pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
+            match self {
+                Mode::Scatter(state) => state.points.get_by_id(id),
+                Mode::Heatmap(state) => state.points.get_by_id(id),
+            }
+        }
+    }
+
+    pub struct State<I> {
         pub(super) df: pl::DataFrame,
-        pub(super) x_axis: super::IndexAxis,
-        pub(super) y_axis: super::YAxisKind,
+        pub(super) index: I,
         points: Points,
         pub(super) hovered_id: Option<aksel::interaction::Id>,
         pub(super) selected_id: Option<aksel::interaction::Id>,
     }
 
-    impl State {
-        pub fn new(df: pl::DataFrame, x_axis: super::IndexAxis, y_axis: super::YAxisKind) -> Self {
+    impl<I> State<I> {
+        pub fn new(df: pl::DataFrame, index: I) -> Self {
             let points = Points::new(df.height());
             Self {
                 df,
-                x_axis,
-                y_axis,
+                index,
                 points,
                 hovered_id: Default::default(),
                 selected_id: Default::default(),
             }
         }
 
+        pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
+            self.points.get_by_id(id)
+        }
+    }
+
+    impl State<super::IndexScatter> {
         pub fn y_axis(&self, axis: super::ValueAxisId) -> Option<&super::ValueAxis> {
-            match &self.y_axis {
-                super::YAxisKind::Index(index_axis) => None,
-                super::YAxisKind::Values(items) => items.iter().find(|ax| ax.id == axis),
-            }
+            self.index.y.iter().find(|ax| ax.id == axis)
         }
 
         pub fn y_axis_mut(&mut self, axis: super::ValueAxisId) -> Option<&mut super::ValueAxis> {
-            match &mut self.y_axis {
-                super::YAxisKind::Index(index_axis) => None,
-                super::YAxisKind::Values(items) => items.iter_mut().find(|ax| ax.id == axis),
-            }
-        }
-
-        pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
-            self.points.get_by_id(id)
+            self.index.y.iter_mut().find(|ax| ax.id == axis)
         }
 
         pub fn update_dataframe(&mut self, dataframe: pl::DataFrame) {
@@ -1072,57 +1209,47 @@ pub(super) mod data {
             self.df = dataframe;
         }
 
-        pub fn y_axis_mode(&mut self, mode: super::YAxisMode) {
-            use super::YAxisMode;
+        // fn convert_y_axis_to_values(&mut self) {
+        //     let y_axis = match &mut self.y_axis {
+        //         YAxisKind::Values(_) => return,
+        //         YAxisKind::Index(axis) => axis,
+        //     };
 
-            match (mode, self.y_axis.mode()) {
-                (YAxisMode::Index, YAxisMode::Index) | (YAxisMode::Values, YAxisMode::Values) => {}
-                (YAxisMode::Index, YAxisMode::Values) => self.convert_y_axis_to_index(),
-                (YAxisMode::Values, YAxisMode::Index) => self.convert_y_axis_to_values(),
-            }
-        }
+        //     let col = match &y_axis.values {
+        //         super::IndexValues::Index => todo!(),
+        //         super::IndexValues::Series(col) => col.clone(),
+        //     };
+        //     let mut traces = super::trace::TraceGroup::default();
+        //     traces.add_trace(col);
+        //     let axis = super::ValueAxis {
+        //         id: 0,
+        //         scale: y_axis.scale,
+        //         position: aksel::axis::Position::Left,
+        //         traces,
+        //     };
+        //     self.y_axis = YAxisKind::Values(vec![axis]);
+        // }
 
-        fn convert_y_axis_to_values(&mut self) {
-            let y_axis = match &mut self.y_axis {
-                YAxisKind::Values(_) => return,
-                YAxisKind::Index(axis) => axis,
-            };
+        // fn convert_y_axis_to_index(&mut self) {
+        //     let y_axis = match &mut self.y_axis {
+        //         YAxisKind::Index(_) => return,
+        //         YAxisKind::Values(items) => &items[0],
+        //     };
 
-            let col = match &y_axis.values {
-                super::IndexValues::Index => todo!(),
-                super::IndexValues::Series(col) => col.clone(),
-            };
-            let mut traces = super::trace::TraceGroup::default();
-            traces.add_trace(col);
-            let axis = super::ValueAxis {
-                id: 0,
-                scale: y_axis.scale,
-                position: aksel::axis::Position::Left,
-                traces,
-            };
-            self.y_axis = YAxisKind::Values(vec![axis]);
-        }
-
-        fn convert_y_axis_to_index(&mut self) {
-            let y_axis = match &mut self.y_axis {
-                YAxisKind::Index(_) => return,
-                YAxisKind::Values(items) => &items[0],
-            };
-
-            let trace = y_axis
-                .traces
-                .get_trace(0)
-                .expect("trace group should not be empty");
-            let values = super::IndexValues::Series(trace.column().clone());
-            let axis = super::IndexAxis {
-                scale: y_axis.scale,
-                values,
-            };
-            self.y_axis = YAxisKind::Index(axis)
-        }
+        //     let trace = y_axis
+        //         .traces
+        //         .get_trace(0)
+        //         .expect("trace group should not be empty");
+        //     let values = super::IndexValues::Series(trace.column().clone());
+        //     let axis = super::IndexAxis {
+        //         scale: y_axis.scale,
+        //         values,
+        //     };
+        //     self.y_axis = YAxisKind::Index(axis)
+        // }
     }
 
-    impl State {
+    impl<I> State<I> {
         pub fn update(&mut self, message: Message) -> iced::Task<Message> {
             match message {
                 Message::ChartDragged(_) => unreachable!("handled elsewhere"),
@@ -1138,10 +1265,74 @@ pub(super) mod data {
                 Message::PointMouseDown { point, event } => iced::Task::none(),
             }
         }
+
+        #[inline]
+        fn draw_point(
+            plot: &mut aksel::Plot<super::PlotValue, Message>,
+            marker: trace::Marker,
+            id: &aksel::interaction::Id,
+            x: super::PlotValue,
+            y: super::PlotValue,
+            color: iced::Color,
+            marker_size: super::trace::MarkerSize,
+        ) {
+            let marker_size = aksel::Measure::Screen(marker_size);
+            let interaction = match marker {
+                trace::Marker::Circle => {
+                    let shape = aksel::shape::Ellipse::circle(
+                        aksel::PlotPoint::new(x, y),
+                        marker_size.clone(),
+                    )
+                    .fill(color);
+
+                    let area = shape.resolve_area(&plot);
+                    plot.render(shape);
+
+                    aksel::Interaction::new(area)
+                        .on_enter(|point, event| Message::ShapeEnter { point, event })
+                        .on_exit(Message::ShapeExit)
+                        .on_press(|point, event| Message::PointMouseDown { point, event })
+                }
+                trace::Marker::Square => {
+                    let shape = aksel::shape::Rectangle::centered(
+                        aksel::PlotPoint::new(x, y),
+                        marker_size.clone(),
+                        marker_size.clone(),
+                    )
+                    .fill(color);
+
+                    let area = shape.resolve_area(&plot);
+                    plot.render(shape);
+
+                    aksel::Interaction::new(area)
+                        .on_enter(|point, event| Message::ShapeEnter { point, event })
+                        .on_exit(Message::ShapeExit)
+                        .on_press(|point, event| Message::PointMouseDown { point, event })
+                }
+                trace::Marker::Triangle => {
+                    let shape = aksel::shape::Triangle::centered(
+                        aksel::PlotPoint::new(x, y),
+                        marker_size.clone(),
+                        marker_size.clone(),
+                    )
+                    .fill(color);
+
+                    let area = shape.resolve_area(&plot);
+                    plot.render(shape);
+
+                    aksel::Interaction::new(area)
+                        .on_enter(|point, event| Message::ShapeEnter { point, event })
+                        .on_exit(Message::ShapeExit)
+                        .on_press(|point, event| Message::PointMouseDown { point, event })
+                }
+            };
+
+            plot.push_interaction(id.clone(), interaction);
+        }
     }
 
-    impl State {
-        fn draw_axis(
+    impl State<super::IndexScatter> {
+        fn draw_scatter(
             &self,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             base_color: iced::Color,
@@ -1211,7 +1402,7 @@ pub(super) mod data {
             let y = self.df.column(column_label).unwrap();
             let y = super::column_to_values_f64(y);
 
-            let x = match &self.x_axis.values {
+            let x = match &self.index.x.values {
                 super::IndexValues::Series(column) => {
                     let x = self.df.column(&column).unwrap();
                     super::column_to_values_f64(x)
@@ -1237,78 +1428,29 @@ pub(super) mod data {
                 Self::draw_point(plot, trace.marker(), id, x, y, color, trace.marker_size());
             }
         }
+    }
 
-        #[inline]
-        fn draw_point(
+    impl aksel::PlotData<super::PlotValue, Message> for State<super::IndexScatter> {
+        fn draw(
+            &self,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
-            marker: trace::Marker,
-            id: &aksel::interaction::Id,
-            x: super::PlotValue,
-            y: super::PlotValue,
-            color: iced::Color,
-            marker_size: super::trace::MarkerSize,
+            theme: &iced::advanced::graphics::core::Theme,
         ) {
-            let marker_size = aksel::Measure::Screen(marker_size);
-            let interaction = match marker {
-                trace::Marker::Circle => {
-                    let shape = aksel::shape::Ellipse::circle(
-                        aksel::PlotPoint::new(x, y),
-                        marker_size.clone(),
-                    )
-                    .fill(color);
-
-                    let area = shape.resolve_area(&plot);
-                    plot.render(shape);
-
-                    aksel::Interaction::new(area)
-                        .on_enter(|point, event| Message::ShapeEnter { point, event })
-                        .on_exit(Message::ShapeExit)
-                        .on_press(|point, event| Message::PointMouseDown { point, event })
-                }
-                trace::Marker::Square => {
-                    let shape = aksel::shape::Rectangle::centered(
-                        aksel::PlotPoint::new(x, y),
-                        marker_size.clone(),
-                        marker_size.clone(),
-                    )
-                    .fill(color);
-
-                    let area = shape.resolve_area(&plot);
-                    plot.render(shape);
-
-                    aksel::Interaction::new(area)
-                        .on_enter(|point, event| Message::ShapeEnter { point, event })
-                        .on_exit(Message::ShapeExit)
-                        .on_press(|point, event| Message::PointMouseDown { point, event })
-                }
-                trace::Marker::Triangle => {
-                    let shape = aksel::shape::Triangle::centered(
-                        aksel::PlotPoint::new(x, y),
-                        marker_size.clone(),
-                        marker_size.clone(),
-                    )
-                    .fill(color);
-
-                    let area = shape.resolve_area(&plot);
-                    plot.render(shape);
-
-                    aksel::Interaction::new(area)
-                        .on_enter(|point, event| Message::ShapeEnter { point, event })
-                        .on_exit(Message::ShapeExit)
-                        .on_press(|point, event| Message::PointMouseDown { point, event })
-                }
-            };
-
-            plot.push_interaction(id.clone(), interaction);
+            for axis in self.index.y.iter() {
+                let base_color = theme.palette().primary;
+                self.draw_scatter(plot, base_color, axis);
+            }
         }
+    }
 
+    impl State<super::IndexHeatmap> {
         fn draw_heatmap(
             &self,
             y_axis: &super::IndexValues,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             theme: &iced::advanced::graphics::core::Theme,
         ) {
-            let x = match &self.x_axis.values {
+            let x = match &self.index.x.values {
                 super::IndexValues::Series(column) => {
                     let x = self.df.column(&column).unwrap();
                     super::column_to_values_f64(x)
@@ -1350,23 +1492,13 @@ pub(super) mod data {
         }
     }
 
-    impl aksel::PlotData<super::PlotValue, Message> for State {
+    impl aksel::PlotData<super::PlotValue, Message> for State<super::IndexHeatmap> {
         fn draw(
             &self,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             theme: &iced::advanced::graphics::core::Theme,
         ) {
-            match &self.y_axis {
-                super::YAxisKind::Index(axis) => {
-                    self.draw_heatmap(&axis.values, plot, theme);
-                }
-                super::YAxisKind::Values(items) => {
-                    for axis in items.iter() {
-                        let base_color = theme.palette().primary;
-                        self.draw_axis(plot, base_color, axis);
-                    }
-                }
-            }
+            self.draw_heatmap(&self.index.y.values, plot, theme);
         }
     }
 }
