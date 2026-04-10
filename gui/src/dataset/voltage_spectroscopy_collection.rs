@@ -47,12 +47,11 @@ impl super::IsFileCollection for State {
 }
 
 impl super::PlotOptions for State {
-    type YAxis = Vec<super::plot::ValueAxis>;
-    fn plot_options(&self) -> super::plot::Options<Self::YAxis> {
-        let mut options = super::plot::Options::new();
+    type Mode = super::plot::IndexHeatmap;
+    fn plot_options(&self) -> super::plot::Options<Self::Mode> {
+        let mut options = super::plot::Options::new_heatmap();
         options.x_axis(DEFAULT_X_COL);
-        let y_id = options.new_y_axis();
-        options.add_trace(y_id, DEFAULT_Y_COL);
+        options.y_axis(DEFAULT_Y_COL);
         options
     }
 }

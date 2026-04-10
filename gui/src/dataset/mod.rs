@@ -13,8 +13,8 @@ trait IsFileCollection {
 }
 
 trait PlotOptions {
-    type YAxis;
-    fn plot_options(&self) -> plot::Options<Self::YAxis>;
+    type Mode;
+    fn plot_options(&self) -> plot::Options<Self::Mode>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -75,6 +75,7 @@ pub enum Reader {
     VoltageSpectroscopyCollection(#[debug(skip)] jpk::voltage_spectroscopy::v2_0::DirReader),
 }
 
+#[derive(derive_more::From)]
 enum DatasetState {
     VoltageSpectroscopy(voltage_spectroscopy::State),
     VoltageSpectroscopyCollection(voltage_spectroscopy_collection::State),
@@ -85,16 +86,6 @@ impl IsFileCollection for DatasetState {
         match self {
             DatasetState::VoltageSpectroscopy(state) => state.is_file_collection(),
             DatasetState::VoltageSpectroscopyCollection(state) => state.is_file_collection(),
-        }
-    }
-}
-
-impl PlotOptions for DatasetState {
-    type YAxis = Vec<plot::ValueAxis>;
-    fn plot_options(&self) -> plot::Options<Self::YAxis> {
-        match self {
-            DatasetState::VoltageSpectroscopy(state) => state.plot_options(),
-            DatasetState::VoltageSpectroscopyCollection(state) => state.plot_options(),
         }
     }
 }
@@ -146,18 +137,26 @@ impl Dataset {
         reader: Reader,
         dataframe: pl::DataFrame,
     ) -> (Self, iced::Task<Message>) {
-        let state = match &reader {
-            Reader::VoltageSpectroscopy(_) => DatasetState::VoltageSpectroscopy(
-                voltage_spectroscopy::State::new(dataframe.clone()),
-            ),
-            Reader::VoltageSpectroscopyCollection(_) => {
-                DatasetState::VoltageSpectroscopyCollection(
-                    voltage_spectroscopy_collection::State::new(dataframe.clone()),
+        let (state, plot) = match &reader {
+            Reader::VoltageSpectroscopy(_) => {
+                let state = voltage_spectroscopy::State::new(dataframe.clone());
+                let plot = plot::State::<<voltage_spectroscopy::State as PlotOptions>::Mode>::new(
+                    dataframe.clone(),
+                    state.plot_options(),
                 )
+                .unwrap();
+                (state.into(), plot.into())
+            }
+            Reader::VoltageSpectroscopyCollection(_) => {
+                let state = voltage_spectroscopy_collection::State::new(dataframe.clone());
+                let plot = plot::State::<
+                    <voltage_spectroscopy_collection::State as PlotOptions>::Mode,
+                >::new(dataframe.clone(), state.plot_options())
+                .unwrap();
+                (state.into(), plot.into())
             }
         };
 
-        let plot = plot::State::new(dataframe.clone(), state.plot_options()).unwrap();
         let (window_id, open) = iced::window::open(iced::window::Settings::default());
         (
             Self {
@@ -273,7 +272,7 @@ impl Dataset {
                     self.children.data_table.as_mut()
                 {
                     let data_table_msg = match &message {
-                        plot::Message::Data(plot::data::Message::ShapeEnter { point, .. }) => {
+                        plot::Message::Data(plot::plot::Message::ShapeEnter { point, .. }) => {
                             let idx = self
                                 .plot
                                 .record_idx_by_point_id(point)
@@ -281,7 +280,7 @@ impl Dataset {
 
                             Some(data_table::Message::HighlightRecord(idx))
                         }
-                        plot::Message::Data(plot::data::Message::ShapeExit) => {
+                        plot::Message::Data(plot::plot::Message::ShapeExit) => {
                             Some(data_table::Message::ClearHighlight)
                         }
                         _ => None,

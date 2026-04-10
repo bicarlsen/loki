@@ -3,12 +3,7 @@ use iced_aksel as aksel;
 use palette::IntoColor;
 use polars::prelude::{self as pl};
 
-type PlotValue = f64;
 pub type ValueAxisId = u8;
-
-pub const X_AXIS_ID: &str = "x";
-pub const Y_AXIS_IDS: [&str; 1] = ["y0"];
-pub const LOG_AXIS_BASE: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AxisScale {
@@ -164,7 +159,7 @@ impl ToString for Mode {
 }
 
 #[derive(Clone, Debug, Default)]
-struct IndexScatter {
+pub struct IndexScatter {
     x: IndexAxis,
     y: Vec<ValueAxis>,
 }
@@ -179,7 +174,7 @@ impl TryFrom<IndexHeatmap> for IndexScatter {
 }
 
 #[derive(Clone, Debug, Default)]
-struct IndexHeatmap {
+pub struct IndexHeatmap {
     x: IndexAxis,
     y: IndexAxis,
 }
@@ -228,8 +223,8 @@ impl Options<IndexScatter> {
         Self::default()
     }
 
-    pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.index.x.values = IndexValues::Series(x_axis.into());
+    pub fn x_axis(&mut self, column: impl Into<String>) -> &mut Self {
+        self.index.x.values = IndexValues::Series(column.into());
         self
     }
 
@@ -276,13 +271,23 @@ impl Options<IndexHeatmap> {
         }
     }
 
-    pub fn x_axis(&mut self, x_axis: impl Into<String>) -> &mut Self {
-        self.index.x.values = IndexValues::Series(x_axis.into());
+    pub fn x_axis(&mut self, column: impl Into<String>) -> &mut Self {
+        self.index.x.values = IndexValues::Series(column.into());
         self
     }
 
     pub fn x_axis_log(&mut self) -> &mut Self {
         self.index.x.scale = AxisScale::Log;
+        self
+    }
+
+    pub fn y_axis(&mut self, column: impl Into<String>) -> &mut Self {
+        self.index.y.values = IndexValues::Series(column.into());
+        self
+    }
+
+    pub fn y_axis_log(&mut self) -> &mut Self {
+        self.index.y.scale = AxisScale::Log;
         self
     }
 }
@@ -315,82 +320,74 @@ where
 pub enum Message {
     SetTitle(String),
     DataframeChange(pl::DataFrame),
-    UpdateXAxisValues(IndexValues),
-    XAxisValuesUpdated,
     #[from]
-    Data(data::Message),
+    Data(plot::Message),
+    /// Mode specific messages.
     #[from]
-    YAxis(MessageYAxis),
+    Mode(MessageMode),
 }
 
 #[derive(Debug, Clone, derive_more::From)]
-pub enum MessageYAxis {
-    /// # Notes
-    /// Only if axis is in index mode
-    UpdateIndexValues(IndexValues),
-    IndexValuesUpdated,
-    /// # Notes
-    /// Only if axis is in values mode
+pub enum MessageMode {
+    Scatter(MessageScatter),
+    Heatmap(MessageHeatmap),
+}
+
+#[derive(Debug, Clone)]
+pub enum MessageScatter {
+    UpdateXValues(IndexValues),
+    XValuesUpdated,
     TraceGroup {
         axis: ValueAxisId,
         message: trace::GroupMessage,
     },
 }
 
-pub struct State {
+#[derive(Debug, Clone)]
+pub enum MessageHeatmap {
+    UpdateXValues(IndexValues),
+    XValuesUpdated,
+    UpdateYValues(IndexValues),
+    YValuesUpdated,
+}
+
+pub struct State<M> {
     default: Settings,
-    chart: aksel::State<&'static str, PlotValue>,
-    data: aksel::Cached<data::Mode>,
+    plot: aksel::Cached<plot::State<M>>,
     title: String,
 }
 
-impl State {
-    pub fn new<I>(dataframe: pl::DataFrame, options: Options<I>) -> Result<Self, ()>
-    where
-        I: Into<ModeIndex>,
-    {
+impl State<IndexScatter> {
+    pub fn new(df: pl::DataFrame, options: Options<IndexScatter>) -> Result<Self, ()> {
         let default: Settings = options.into();
-        let chart = match &default.index {
-            ModeIndex::Scatter(index) => Self::chart_scatter(&dataframe, &index),
-            ModeIndex::Heatmap(index) => todo!(),
+        let ModeIndex::Scatter(index) = &default.index else {
+            panic!("invalid mode index");
         };
-
-        let data = match &default.index {
-            ModeIndex::Scatter(index) => data::State::new(dataframe, index.clone()).into(),
-            ModeIndex::Heatmap(index) => data::State::new(dataframe, index.clone()).into(),
-        };
+        let plot = plot::State::new(df, index.clone()).into();
         Ok(Self {
             default,
-            chart,
-            data: aksel::Cached::new(data),
+            plot: aksel::Cached::new(plot),
+            title: "".to_string(),
+        })
+    }
+}
+
+impl State<IndexHeatmap> {
+    pub fn new(df: pl::DataFrame, options: Options<IndexHeatmap>) -> Result<Self, ()> {
+        let default: Settings = options.into();
+        let ModeIndex::Heatmap(index) = &default.index else {
+            panic!("invalid mode index");
+        };
+        let plot = plot::State::new(df, index.clone()).into();
+        Ok(Self {
+            default,
+            plot: aksel::Cached::new(plot),
             title: "".to_string(),
         })
     }
 
-    fn chart_scatter(
-        dataframe: &pl::DataFrame,
-        index: &IndexScatter,
-    ) -> aksel::State<&'static str, f64> {
-        let mut chart = aksel::State::new();
-
-        chart.set_axis(
-            X_AXIS_ID,
-            index_axis_to_aksel(&index.x, dataframe, aksel::axis::Position::Bottom),
-        );
-
-        for axis in index.y.iter() {
-            let id = axis.aksel_id();
-            let axis = value_axis_to_aksel(axis, &dataframe);
-            chart.set_axis(id, axis);
-        }
-
-        chart
-    }
-
-    fn chart_heatmap(
-        dataframe: &pl::DataFrame,
-        index: &IndexHeatmap,
-    ) -> aksel::State<&'static str, f64> {
+    #[inline]
+    fn chart(dataframe: &pl::DataFrame, index: &IndexHeatmap) -> aksel::State<&'static str, f64> {
         let mut chart = aksel::State::new();
 
         chart.set_axis(
@@ -405,97 +402,31 @@ impl State {
 
         chart
     }
+}
+
+impl<M> State<M> {
+    pub fn mode(&mut self, mode: Mode) {
+        self.plot.edit().mode(mode)
+    }
 
     pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
-        self.data.get().record_idx_by_point_id(id)
+        self.plot.get().record_idx_by_point_id(id)
     }
 }
 
-impl State {
-    pub fn mode(&mut self, mode: Mode) {
-        self.data.edit().mode(mode)
-    }
-}
-
-impl State {
+impl<M> State<M> {
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::SetTitle(_) => todo!(),
-            Message::UpdateXAxisValues(value) => self.update_x_axis_values(value),
-            Message::XAxisValuesUpdated => self.rescale_xaxis(),
             Message::DataframeChange(dataframe) => self.dataframe_change(dataframe),
             Message::Data(message) => self.update_data(message),
-            Message::YAxis(message) => self.update_y_axis(message),
-        }
-    }
-
-    fn update_x_axis_values(&mut self, values: IndexValues) -> iced::Task<Message> {
-        // TODO: account for logarithmic scale
-        let data = self.data.edit();
-        data.x_axis.values = values;
-        iced::Task::done(Message::XAxisValuesUpdated)
-    }
-
-    fn rescale_xaxis(&mut self) -> iced::Task<Message> {
-        let data = self.data.get();
-        let axis = index_axis_to_aksel(&data.x_axis, &data.df, aksel::axis::Position::Bottom);
-        self.chart.set_axis(X_AXIS_ID, axis);
-        iced::Task::none()
-    }
-
-    fn update_trace_group(
-        &mut self,
-        axis: ValueAxisId,
-        message: trace::GroupMessage,
-    ) -> iced::Task<Message> {
-        match message {
-            trace::GroupMessage::BoundsChanged => {
-                let data = self.data.get();
-                let ax = data.y_axis(axis).expect("axis should exist");
-                self.chart.set_axis(
-                    Y_AXIS_IDS[ax.id as usize],
-                    value_axis_to_aksel(&ax, &data.df),
-                );
-                iced::Task::none()
-            }
-            trace::GroupMessage::UpdateTrace {
-                message: ref trace_message,
-                ..
-            } => {
-                let data = self.data.edit();
-                let ax = data.y_axis_mut(axis).expect("axis should exist");
-                let bounds_change_task = match trace_message {
-                    trace::TraceMessage::ColumnChanged => iced::Task::done(
-                        MessageYAxis::TraceGroup {
-                            axis,
-                            message: trace::GroupMessage::BoundsChanged,
-                        }
-                        .into(),
-                    ),
-                    _ => iced::Task::none(),
-                };
-
-                iced::Task::batch([
-                    ax.traces
-                        .update(message)
-                        .map(move |message| MessageYAxis::TraceGroup { axis, message }.into()),
-                    bounds_change_task,
-                ])
-            }
-            _ => {
-                let data = self.data.edit();
-                let ax = data.y_axis_mut(axis).expect("axis should exist");
-                ax.traces
-                    .update(message)
-                    .map(move |message| MessageYAxis::TraceGroup { axis, message }.into())
-            }
+            Message::Mode(message) => self.update_mode(message),
         }
     }
 
     fn dataframe_change(&mut self, dataframe: pl::DataFrame) -> iced::Task<Message> {
         let mut tasks = Vec::new();
-
-        let data = self.data.edit();
+        let data = self.plot.edit();
         data.update_dataframe(dataframe);
         let columns = data
             .df
@@ -513,7 +444,7 @@ impl State {
                 }
             }
         }
-        tasks.push(iced::Task::done(Message::XAxisValuesUpdated));
+        tasks.push(iced::Task::done(Message::XValuesUpdated));
 
         match &mut data.y_axis {
             YAxisKind::Index(index_axis) => todo!(),
@@ -568,15 +499,15 @@ impl State {
         iced::Task::batch(tasks)
     }
 
-    fn update_data(&mut self, message: data::Message) -> iced::Task<Message> {
+    fn update_data(&mut self, message: plot::Message) -> iced::Task<Message> {
         match message {
-            data::Message::ChartDragged(delta) => {
+            plot::Message::Dragged(delta) => {
                 // TODO: Account for multiple y axes
                 self.chart
                     .pan_axes(X_AXIS_ID, Y_AXIS_IDS[0], delta.x, delta.y);
                 iced::Task::none()
             }
-            data::Message::ChartScrolled(aksel::ScrollEvent {
+            plot::Message::Scrolled(aksel::ScrollEvent {
                 delta, position, ..
             }) => {
                 let zoom_factor = match delta {
@@ -599,12 +530,35 @@ impl State {
                     .zoom(zoom_factor, Some(position.y));
                 iced::Task::none()
             }
-            _ => self.data.edit().update(message).map(Message::Data),
+            _ => self.plot.edit().update(message).map(Message::Data),
         }
     }
 
+    fn update_mode(&mut self, message: MessageMode) -> iced::Task<Message> {
+        match message {
+            MessageMode::Scatter(_) => self.update_mode_scatter(message),
+            MessageMode::Heatmap(_) => self.update_mode_heatmap(message),
+        }
+    }
+}
+
+impl<M> State<M> {
+    fn update_x_axis_values(&mut self, values: IndexValues) -> iced::Task<Message> {
+        // TODO: account for logarithmic scale
+        let data = self.plot.edit();
+        data.index.x.values = values;
+        iced::Task::done(Message::XValuesUpdated)
+    }
+
+    fn rescale_xaxis(&mut self) -> iced::Task<Message> {
+        let data = self.plot.get();
+        let axis = index_axis_to_aksel(&data.x_axis, &data.df, aksel::axis::Position::Bottom);
+        self.chart.set_axis(X_AXIS_ID, axis);
+        iced::Task::none()
+    }
+
     fn rescale_yaxis(&mut self) -> iced::Task<Message> {
-        let data = self.data.get();
+        let data = self.plot.get();
         let YAxisKind::Index(axis) = &data.y_axis else {
             panic!("y axis in invalid state")
         };
@@ -612,24 +566,82 @@ impl State {
         self.chart.set_axis(Y_AXIS_IDS[0], axis);
         iced::Task::none()
     }
+}
 
-    fn update_y_axis(&mut self, message: MessageYAxis) -> iced::Task<Message> {
+impl State<IndexScatter> {
+    fn update_mode_scatter(&mut self, message: MessageScatter) -> iced::Task<Message> {
         match message {
-            MessageYAxis::TraceGroup { axis, message } => self.update_trace_group(axis, message),
-            MessageYAxis::UpdateIndexValues(values) => {
-                let data = self.data.edit();
-                let YAxisKind::Index(axis) = &mut data.y_axis else {
-                    panic!("y axis in invalid state");
-                };
-                axis.values = values;
-                iced::Task::done(MessageYAxis::IndexValuesUpdated.into())
+            MessageScatter::UpdateXValues(value) => self.update_x_axis_values(value),
+            MessageScatter::XValuesUpdated => self.rescale_xaxis(),
+            MessageScatter::TraceGroup { axis, message } => self.update,
+        }
+    }
+
+    fn update_trace_group(
+        &mut self,
+        axis: ValueAxisId,
+        message: trace::GroupMessage,
+    ) -> iced::Task<Message> {
+        match message {
+            trace::GroupMessage::BoundsChanged => {
+                let data = self.plot.get();
+                let ax = data.index.y(axis).expect("axis should exist");
+                self.chart.set_axis(
+                    Y_AXIS_IDS[ax.id as usize],
+                    value_axis_to_aksel(&ax, &data.df),
+                );
+                iced::Task::none()
             }
-            MessageYAxis::IndexValuesUpdated => self.rescale_yaxis(),
+            trace::GroupMessage::UpdateTrace {
+                message: ref trace_message,
+                ..
+            } => {
+                let data = self.plot.edit();
+                let ax = data.y_axis_mut(axis).expect("axis should exist");
+                let bounds_change_task = match trace_message {
+                    trace::TraceMessage::ColumnChanged => iced::Task::done(
+                        MessageYAxis::TraceGroup {
+                            axis,
+                            message: trace::GroupMessage::BoundsChanged,
+                        }
+                        .into(),
+                    ),
+                    _ => iced::Task::none(),
+                };
+
+                iced::Task::batch([
+                    ax.traces
+                        .update(message)
+                        .map(move |message| MessageYAxis::TraceGroup { axis, message }.into()),
+                    bounds_change_task,
+                ])
+            }
+            _ => {
+                let data = self.plot.edit();
+                let ax = data.y_axis_mut(axis).expect("axis should exist");
+                ax.traces
+                    .update(message)
+                    .map(move |message| MessageYAxis::TraceGroup { axis, message }.into())
+            }
         }
     }
 }
 
-impl State {
+impl State<IndexHeatmap> {
+    fn update_mode_heatmap(&mut self, message: MessageHeatmap) -> iced::Task<Message> {
+        match message {
+            MessageHeatmap::UpdateXValues(index_values) => self.update_x_axis_values(values),
+            MessageHeatmap::XValuesUpdated => self.rescale_xaxis(),
+            MessageHeatmap::UpdateYValues(index_values) => self.update_x_axis_values(values),
+            MessageHeatmap::YValuesUpdated => self.rescale_yaxis(),
+        }
+    }
+}
+
+impl<M> State<M>
+where
+    M:,
+{
     pub fn view(&self) -> iced::Element<'_, Message> {
         let plot = aksel::Chart::new(&self.chart)
             .marker(
@@ -642,12 +654,12 @@ impl State {
                 aksel::axis::MarkerPosition::Cursor,
                 axis_renderer_marker,
             )
-            .plot_data(self.data.get(), X_AXIS_ID, Y_AXIS_IDS[0])
+            .plot_data(self.plot.get(), X_AXIS_ID, Y_AXIS_IDS[0])
             .on_drag(|event: aksel::DragEvent<aksel::Delta>| {
                 (event.button_held == iced::mouse::Button::Left)
-                    .then_some(data::Message::ChartDragged(event.delta).into())
+                    .then_some(plot::Message::Dragged(event.delta).into())
             })
-            .on_scroll(data::Message::ChartScrolled);
+            .on_scroll(plot::Message::Scrolled);
 
         let plot: iced::Element<'_, _> = plot.into();
         let plot = plot.map(Message::Data);
@@ -655,9 +667,11 @@ impl State {
 
         iced::widget::column![plot, axes_controls].into()
     }
+}
 
+impl<M> State<M> {
     fn axes_controls(&self) -> iced::Element<'_, Message> {
-        let data = self.data.get();
+        let data = self.plot.get();
         let pl_xaxis = self.pl_index_axis(&data.x_axis.values, Message::UpdateXAxisValues);
         let pl_xaxis = iced::widget::row![iced::widget::text("x-axis"), pl_xaxis];
 
@@ -686,7 +700,7 @@ impl State {
     where
         F: Fn(IndexValues) -> Message + 'a,
     {
-        let data = self.data.get();
+        let data = self.plot.get();
         let columns = data
             .df
             .schema()
@@ -718,7 +732,7 @@ impl State {
     }
 
     fn pl_values_axis<'a>(&'a self, axis: &'a ValueAxis) -> iced::Element<'a, Message> {
-        let data = self.data.get();
+        let data = self.plot.get();
         let columns = data
             .df
             .schema()
@@ -1095,17 +1109,22 @@ mod trace {
     }
 }
 
-pub(super) mod data {
+pub(super) mod plot {
     use super::trace;
     use crate::dataset::plot::{color_to_lch, lch_to_color};
     use iced_aksel::{self as aksel, interaction::IntoArea};
     use palette::ShiftHue;
     use polars::prelude as pl;
 
+    type PlotValue = f64;
+    pub const X_AXIS_ID: &str = "x";
+    pub const Y_AXIS_IDS: [&str; 1] = ["y0"];
+    pub const LOG_AXIS_BASE: f64 = 10.0;
+
     #[derive(Debug, Clone)]
     pub enum Message {
-        ChartDragged(aksel::Delta),
-        ChartScrolled(aksel::ScrollEvent<iced::Point>),
+        Dragged(aksel::Delta),
+        Scrolled(aksel::ScrollEvent<iced::Point>),
         ShapeEnter {
             point: aksel::interaction::Id,
             event: aksel::EnterEvent,
@@ -1153,22 +1172,8 @@ pub(super) mod data {
         }
     }
 
-    #[derive(derive_more::From)]
-    pub enum Mode {
-        Scatter(State<super::IndexScatter>),
-        Heatmap(State<super::IndexHeatmap>),
-    }
-
-    impl Mode {
-        pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
-            match self {
-                Mode::Scatter(state) => state.points.get_by_id(id),
-                Mode::Heatmap(state) => state.points.get_by_id(id),
-            }
-        }
-    }
-
     pub struct State<I> {
+        chart: aksel::State<&'static str, PlotValue>,
         pub(super) df: pl::DataFrame,
         pub(super) index: I,
         points: Points,
@@ -1178,8 +1183,10 @@ pub(super) mod data {
 
     impl<I> State<I> {
         pub fn new(df: pl::DataFrame, index: I) -> Self {
+            let chart = Self::chart(&df, &index);
             let points = Points::new(df.height());
             Self {
+                chart,
                 df,
                 index,
                 points,
@@ -1188,8 +1195,36 @@ pub(super) mod data {
             }
         }
 
+        #[inline]
+        fn chart(
+            dataframe: &pl::DataFrame,
+            index: &super::IndexScatter,
+        ) -> aksel::State<&'static str, f64> {
+            let mut chart = aksel::State::new();
+
+            chart.set_axis(
+                X_AXIS_ID,
+                index_axis_to_aksel(&index.x, dataframe, aksel::axis::Position::Bottom),
+            );
+
+            for axis in index.y.iter() {
+                let id = axis.aksel_id();
+                let axis = value_axis_to_aksel(axis, &dataframe);
+                chart.set_axis(id, axis);
+            }
+
+            chart
+        }
+
         pub fn record_idx_by_point_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
             self.points.get_by_id(id)
+        }
+
+        pub fn update_dataframe(&mut self, dataframe: pl::DataFrame) {
+            let _ = self.hovered_id.take();
+            let _ = self.selected_id.take();
+            self.points = Points::new(dataframe.height());
+            self.df = dataframe;
         }
     }
 
@@ -1201,59 +1236,13 @@ pub(super) mod data {
         pub fn y_axis_mut(&mut self, axis: super::ValueAxisId) -> Option<&mut super::ValueAxis> {
             self.index.y.iter_mut().find(|ax| ax.id == axis)
         }
-
-        pub fn update_dataframe(&mut self, dataframe: pl::DataFrame) {
-            let _ = self.hovered_id.take();
-            let _ = self.selected_id.take();
-            self.points = Points::new(dataframe.height());
-            self.df = dataframe;
-        }
-
-        // fn convert_y_axis_to_values(&mut self) {
-        //     let y_axis = match &mut self.y_axis {
-        //         YAxisKind::Values(_) => return,
-        //         YAxisKind::Index(axis) => axis,
-        //     };
-
-        //     let col = match &y_axis.values {
-        //         super::IndexValues::Index => todo!(),
-        //         super::IndexValues::Series(col) => col.clone(),
-        //     };
-        //     let mut traces = super::trace::TraceGroup::default();
-        //     traces.add_trace(col);
-        //     let axis = super::ValueAxis {
-        //         id: 0,
-        //         scale: y_axis.scale,
-        //         position: aksel::axis::Position::Left,
-        //         traces,
-        //     };
-        //     self.y_axis = YAxisKind::Values(vec![axis]);
-        // }
-
-        // fn convert_y_axis_to_index(&mut self) {
-        //     let y_axis = match &mut self.y_axis {
-        //         YAxisKind::Index(_) => return,
-        //         YAxisKind::Values(items) => &items[0],
-        //     };
-
-        //     let trace = y_axis
-        //         .traces
-        //         .get_trace(0)
-        //         .expect("trace group should not be empty");
-        //     let values = super::IndexValues::Series(trace.column().clone());
-        //     let axis = super::IndexAxis {
-        //         scale: y_axis.scale,
-        //         values,
-        //     };
-        //     self.y_axis = YAxisKind::Index(axis)
-        // }
     }
 
     impl<I> State<I> {
         pub fn update(&mut self, message: Message) -> iced::Task<Message> {
             match message {
-                Message::ChartDragged(_) => unreachable!("handled elsewhere"),
-                Message::ChartScrolled(_) => unreachable!("handled elsewhere"),
+                Message::Dragged(_) => unreachable!("handled elsewhere"),
+                Message::Scrolled(_) => unreachable!("handled elsewhere"),
                 Message::ShapeEnter { point, event } => {
                     let _ = self.hovered_id.insert(point);
                     iced::Task::none()
@@ -1332,7 +1321,7 @@ pub(super) mod data {
     }
 
     impl State<super::IndexScatter> {
-        fn draw_scatter(
+        fn draw_axis(
             &self,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             base_color: iced::Color,
@@ -1438,13 +1427,13 @@ pub(super) mod data {
         ) {
             for axis in self.index.y.iter() {
                 let base_color = theme.palette().primary;
-                self.draw_scatter(plot, base_color, axis);
+                self.draw_axis(plot, base_color, axis);
             }
         }
     }
 
     impl State<super::IndexHeatmap> {
-        fn draw_heatmap(
+        fn draw(
             &self,
             y_axis: &super::IndexValues,
             plot: &mut aksel::Plot<super::PlotValue, Message>,
@@ -1498,7 +1487,7 @@ pub(super) mod data {
             plot: &mut aksel::Plot<super::PlotValue, Message>,
             theme: &iced::advanced::graphics::core::Theme,
         ) {
-            self.draw_heatmap(&self.index.y.values, plot, theme);
+            self.draw(&self.index.y.values, plot, theme);
         }
     }
 }

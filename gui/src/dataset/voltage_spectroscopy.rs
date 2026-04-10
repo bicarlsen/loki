@@ -42,8 +42,8 @@ impl super::IsFileCollection for State {
 }
 
 impl super::PlotOptions for State {
-    type YAxis = Vec<super::plot::ValueAxis>;
-    fn plot_options(&self) -> super::plot::Options<Self::YAxis> {
+    type Mode = super::plot::IndexScatter;
+    fn plot_options(&self) -> super::plot::Options<Self::Mode> {
         let mut options = super::plot::Options::new();
         options.x_axis(DEFAULT_X_COL);
         let y_id = options.new_y_axis();
