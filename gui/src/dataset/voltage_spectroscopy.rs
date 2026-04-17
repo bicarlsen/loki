@@ -1,5 +1,5 @@
 //! Element for a single voltage spectroscopy dataset (`.jpk-voltage-ramp`).
-
+use super::plot::scatter;
 use polars::prelude::{self as pl, *};
 
 const DEFAULT_X_COL: &str = "cafmBias";
@@ -33,21 +33,19 @@ impl State {
     pub fn view(&self) -> iced::Element<'_, Message> {
         todo!()
     }
+
+    pub fn default_options() -> scatter::Options {
+        let x = scatter::axis::IndexAxis::new(super::plot::axis::IndexValues::Series(
+            DEFAULT_X_COL.to_string(),
+        ));
+        let mut y = scatter::axis::ValueAxis::new(0);
+        y.add_trace(DEFAULT_Y_COL);
+        scatter::Options::new(scatter::Index::new(x, vec![y]))
+    }
 }
 
 impl super::IsFileCollection for State {
     fn is_file_collection(&self) -> bool {
         false
-    }
-}
-
-impl super::PlotOptions for State {
-    type Mode = super::plot::IndexScatter;
-    fn plot_options(&self) -> super::plot::Options<Self::Mode> {
-        let mut options = super::plot::Options::new();
-        options.x_axis(DEFAULT_X_COL);
-        let y_id = options.new_y_axis();
-        options.add_trace(y_id, DEFAULT_Y_COL);
-        options
     }
 }

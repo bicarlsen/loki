@@ -1,4 +1,6 @@
-use iced_aksel as aksel;
+//! Data set plot.
+// TODO: Reset button to reset plot scaling and panning.
+
 use polars::prelude as pl;
 
 pub mod heatmap;

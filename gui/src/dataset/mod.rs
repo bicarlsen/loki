@@ -12,11 +12,6 @@ trait IsFileCollection {
     fn is_file_collection(&self) -> bool;
 }
 
-trait PlotOptions {
-    type Mode;
-    fn plot_options(&self) -> plot::Options<Self::Mode>;
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum ChildWindowType {
     Settings,
@@ -135,24 +130,21 @@ impl Dataset {
     pub fn new(
         path: impl Into<PathBuf>,
         reader: Reader,
-        dataframe: pl::DataFrame,
+        df: pl::DataFrame,
     ) -> (Self, iced::Task<Message>) {
         let (state, plot) = match &reader {
             Reader::VoltageSpectroscopy(_) => {
-                let state = voltage_spectroscopy::State::new(dataframe.clone());
-                let plot = plot::State::<<voltage_spectroscopy::State as PlotOptions>::Mode>::new(
-                    dataframe.clone(),
-                    state.plot_options(),
-                )
-                .unwrap();
+                let state = voltage_spectroscopy::State::new(df.clone());
+                let plot =
+                    plot::State::new(df.clone(), voltage_spectroscopy::State::default_options());
                 (state.into(), plot.into())
             }
             Reader::VoltageSpectroscopyCollection(_) => {
-                let state = voltage_spectroscopy_collection::State::new(dataframe.clone());
-                let plot = plot::State::<
-                    <voltage_spectroscopy_collection::State as PlotOptions>::Mode,
-                >::new(dataframe.clone(), state.plot_options())
-                .unwrap();
+                let state = voltage_spectroscopy_collection::State::new(df.clone());
+                let plot = plot::State::new(
+                    df.clone(),
+                    voltage_spectroscopy_collection::State::default_options(),
+                );
                 (state.into(), plot.into())
             }
         };
@@ -163,7 +155,7 @@ impl Dataset {
                 path: path.into(),
                 window_id,
                 reader,
-                pipeline: pipeline::Pipeline::new(dataframe),
+                pipeline: pipeline::Pipeline::new(df),
                 state,
                 plot,
                 children: Children::default(),
@@ -268,37 +260,37 @@ impl Dataset {
                 iced::Task::none()
             }
             Message::Plot(message) => {
-                let data_table_msg = if let Some((_, data_table)) =
-                    self.children.data_table.as_mut()
-                {
-                    let data_table_msg = match &message {
-                        plot::Message::Data(plot::plot::Message::ShapeEnter { point, .. }) => {
-                            let idx = self
-                                .plot
-                                .record_idx_by_point_id(point)
-                                .expect("record should exist");
+                let data_table_msg =
+                    if let Some((_, data_table)) = self.children.data_table.as_mut() {
+                        let data_table_msg = match &message {
+                            // plot::Message::Data(plot::chart::Message::ShapeEnter { point, .. }) => {
+                            //     let idx = self
+                            //         .plot
+                            //         .record_idx_by_point_id(point)
+                            //         .expect("record should exist");
 
-                            Some(data_table::Message::HighlightRecord(idx))
+                            //     Some(data_table::Message::HighlightRecord(idx))
+                            // }
+                            // plot::Message::Data(plot::chart::Message::ShapeExit) => {
+                            //     Some(data_table::Message::ClearHighlight)
+                            // }
+                            _ => None,
+                        };
+
+                        match data_table_msg {
+                            None => iced::Task::none(),
+                            Some(msg) => data_table.update(msg).map(Into::into),
                         }
-                        plot::Message::Data(plot::plot::Message::ShapeExit) => {
-                            Some(data_table::Message::ClearHighlight)
-                        }
-                        _ => None,
+                    } else {
+                        iced::Task::none()
                     };
-
-                    match data_table_msg {
-                        None => iced::Task::none(),
-                        Some(msg) => data_table.update(msg).map(Into::into),
-                    }
-                } else {
-                    iced::Task::none()
-                };
 
                 iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
             }
             Message::Settings(message) => {
                 if let settings::Message::SetMode(mode) = &message {
-                    self.plot.mode(mode);
+                    // self.plot.mode(mode);
+                    todo!()
                 }
 
                 if let Some((_, settings)) = self.children.settings.as_mut() {
@@ -404,14 +396,14 @@ mod settings {
 
     #[derive(Debug, Clone)]
     pub enum Message {
-        SetMode(plot::Mode),
+        SetMode(plot::mode::Kind),
     }
 
     #[derive(Default)]
     #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
     pub struct Settings {
         /// Plot mode.
-        mode: super::plot::Mode,
+        mode: super::plot::mode::Kind,
     }
 
     impl Settings {
@@ -432,7 +424,10 @@ mod settings {
             let title = iced::widget::text("Settings");
 
             let pl_mode = iced::widget::pick_list(
-                [super::plot::Mode::Scatter, super::plot::Mode::Heatmap],
+                [
+                    super::plot::mode::Kind::Scatter,
+                    super::plot::mode::Kind::Heatmap,
+                ],
                 Some(self.mode),
                 Message::SetMode,
             );

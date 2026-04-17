@@ -1,5 +1,5 @@
 //! Element for a voltage spectroscopy dataset collection (multiple `.jpk-voltage-ramp`).
-
+use super::plot::heatmap;
 use polars::prelude::{self as pl, *};
 
 const DEFAULT_X_COL: &str = "x";
@@ -38,21 +38,15 @@ impl State {
     pub fn view(&self) -> iced::Element<'_, Message> {
         todo!()
     }
+
+    pub fn default_options() -> heatmap::Options {
+        todo!()
+    }
 }
 
 impl super::IsFileCollection for State {
     fn is_file_collection(&self) -> bool {
         true
-    }
-}
-
-impl super::PlotOptions for State {
-    type Mode = super::plot::IndexHeatmap;
-    fn plot_options(&self) -> super::plot::Options<Self::Mode> {
-        let mut options = super::plot::Options::new_heatmap();
-        options.x_axis(DEFAULT_X_COL);
-        options.y_axis(DEFAULT_Y_COL);
-        options
     }
 }
 
