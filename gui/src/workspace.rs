@@ -2,29 +2,22 @@
 use super::dataset;
 use crate::icon;
 use jpk_reader as jpk;
+use polars::prelude as pl;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The workspace was opened.
-    WorkspaceOpened(iced::window::Id),
-    WorkspaceClosed(iced::window::Id),
     /// Open a dataset file chooser.
     PromptOpenDatasetFile,
     /// Open a dataset directory chooser.
     PromptOpenDatasetDir,
-    /// The user selected a datset file path to try to open.
-    DatasetFilePathSelected(PathBuf),
-    /// The user selected a datset directory path to try to open.
-    DatasetDirPathSelected(PathBuf),
+    /// The user selected a dataset file path to try to open.
+    LoadDatasetFilePathSelected(PathBuf),
+    /// The user selected a dataset directory path to try to open.
+    LoadDatasetDirPathSelected(PathBuf),
     // A dataset is loading.
     DatasetLoading {
         path: PathBuf,
-    },
-    /// A dataset loaded successfully.
-    DatasetLoaded {
-        path: PathBuf,
-        kind: jpk::dataset::DatasetType,
     },
     /// A dataset window opened.
     DatasetWindowOpened {
@@ -60,10 +53,10 @@ pub enum Message {
 pub enum Action {
     None,
     Run(iced::Task<Message>),
-    /// The user selected a dataset file path to try to open.
-    OpenDatasetFile(PathBuf),
-    /// The user selected a dataset directory path to try to open.
-    OpenDatasetDir(PathBuf),
+    /// Try to load the file as a dataset.
+    LoadDatasetFile(PathBuf),
+    /// Try to load the directory as a dataset.
+    LoadDatasetDir(PathBuf),
     #[cfg(feature = "project")]
     SaveProject(PathBuf),
     #[cfg(feature = "project")]
@@ -139,7 +132,9 @@ impl Workspace {
 }
 
 impl Workspace {
-    pub fn new() -> (Self, iced::Task<Message>) {
+    /// # Returns
+    /// Window open task.
+    pub fn new() -> (Self, iced::Task<iced::window::Id>) {
         let settings = iced::window::Settings {
             size: iced::Size {
                 width: 300.0,
@@ -147,24 +142,21 @@ impl Workspace {
             },
             ..Default::default()
         };
-        let (_, open) = iced::window::open(settings);
 
-        (Self::default(), open.map(Message::WorkspaceOpened))
+        let (_, open) = iced::window::open(settings);
+        (Self::default(), open)
     }
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::WorkspaceOpened(id) => Action::None,
-            Message::WorkspaceClosed(id) => Action::None,
-            Message::PromptOpenDatasetFile => Action::Run(self.prompt_open_dataset_file()),
-            Message::PromptOpenDatasetDir => Action::Run(self.prompt_open_dataset_dir()),
-            Message::DatasetFilePathSelected(path) => Action::OpenDatasetFile(path),
-            Message::DatasetDirPathSelected(path) => Action::OpenDatasetDir(path),
+            Message::PromptOpenDatasetFile => Action::Run(self.maybe_open_dataset_file()),
+            Message::PromptOpenDatasetDir => Action::Run(self.maybe_open_dataset_dir()),
+            Message::LoadDatasetDirPathSelected(path) => Action::LoadDatasetFile(path),
+            Message::LoadDatasetDirPathSelected(path) => Action::LoadDatasetDir(path),
             Message::DatasetLoading { path } => {
                 self.dataset_set_loading(path);
                 Action::None
             }
-            Message::DatasetLoaded { path, kind } => Action::Run(self.dataset_loaded(path, kind)),
             Message::DatasetWindowOpened { path, window } => {
                 self.dataset_window_opened(path, window);
                 Action::None
@@ -287,30 +279,32 @@ impl Workspace {
 
         iced::widget::column![menu, dataset_commands, dataset_list].into()
     }
-
-    pub fn subscription(&self) -> iced::Subscription<Message> {
-        iced::window::close_events().map(Message::WorkspaceClosed)
-    }
 }
 
 impl Workspace {
-    fn prompt_open_dataset_file(&mut self) -> iced::Task<Message> {
-        rfd::FileDialog::new()
-            .set_title("Open dataset file")
-            .pick_file()
-            .map(|path| iced::Task::done(Message::DatasetFilePathSelected(path)))
-            .unwrap_or(iced::Task::none())
+    fn maybe_open_dataset_file(&mut self) -> iced::Task<Message> {
+        iced::Task::future(
+            rfd::AsyncFileDialog::new()
+                .set_title("Open dataset file")
+                .pick_file(),
+        )
+        .map(|path| match path {
+            None => iced::Task::none(),
+            Some(fh) => Action::LoadDatasetFile(fh.path().to_path_buf()),
+        })
     }
 
-    fn prompt_open_dataset_dir(&mut self) -> iced::Task<Message> {
-        rfd::FileDialog::new()
-            .set_title("Open dataset folder")
-            .pick_folder()
-            .map(|path| iced::Task::done(Message::DatasetDirPathSelected(path)))
-            .unwrap_or(iced::Task::none())
+    fn maybe_open_dataset_dir(&mut self) -> iced::Task<Message> {
+        iced::Task::future(
+            rfd::AsyncFileDialog::new()
+                .set_title("Open dataset folder")
+                .pick_folder(),
+        )
+        .then(|path| path.map(|path| iced::Task::done(Message::DatasetDirPathSelected(path))))
+        .unwrap_or(iced::Task::none())
     }
 
-    fn dataset_set_loading(&mut self, path: PathBuf) {
+    pub fn dataset_set_loading(&mut self, path: PathBuf) {
         if let Some(dataset) = self
             .datasets
             .iter_mut()
@@ -329,11 +323,7 @@ impl Workspace {
         }
     }
 
-    fn dataset_loaded(
-        &mut self,
-        path: PathBuf,
-        kind: jpk::dataset::DatasetType,
-    ) -> iced::Task<Message> {
+    pub fn dataset_loaded(&mut self, path: PathBuf, kind: jpk::dataset::DatasetType) {
         let Some(dataset) = self
             .datasets
             .iter_mut()
@@ -344,10 +334,9 @@ impl Workspace {
 
         dataset.data = DatasetState::Ok;
         let _ = dataset.kind.insert(kind);
-        iced::Task::none()
     }
 
-    fn dataset_window_opened(&mut self, path: PathBuf, window: iced::window::Id) {
+    fn insert_dataset_window(&mut self, path: PathBuf, window: iced::window::Id) {
         let Some(dataset) = self
             .datasets
             .iter_mut()

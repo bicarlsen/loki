@@ -44,12 +44,6 @@ impl State {
     }
 }
 
-impl super::IsFileCollection for State {
-    fn is_file_collection(&self) -> bool {
-        true
-    }
-}
-
 fn photodiode_fit(df: &pl::DataFrame) -> pl::DataFrame {
     let groups = df
         .group_by([DEFAULT_X_COL, DEFAULT_Y_COL, DEFAULT_SEGMENT_COL])

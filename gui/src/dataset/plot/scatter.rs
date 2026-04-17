@@ -22,14 +22,17 @@ impl Points {
         Self { by_idx, by_id }
     }
 
+    /// Get a point's id by index.
     pub fn get_by_idx(&self, idx: usize) -> Option<aksel::interaction::Id> {
         self.by_idx.get(idx).cloned()
     }
 
+    /// Get a point's index by id.
     pub fn get_by_id(&self, id: &aksel::interaction::Id) -> Option<usize> {
         self.by_id.get(id).cloned()
     }
 
+    /// Iterate over the points by index.
     pub fn iter_idx(&self) -> impl Iterator<Item = &aksel::interaction::Id> {
         self.by_idx.iter()
     }
@@ -78,6 +81,11 @@ pub enum PlotInteraction {
 pub enum Message {
     Plot(PlotInteraction),
     Data(data::Message),
+}
+
+pub enum Action {
+    None,
+    DataHovered(Option<usize>),
 }
 
 pub(super) struct State {
@@ -143,26 +151,32 @@ impl State {
         .into()
     }
 
-    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+    pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::Plot(message) => self.update_chart(message),
             Message::Data(message) => match self.data.edit().update(message) {
-                data::Action::None => iced::Task::none(),
+                data::Action::None => Action::None,
                 data::Action::UpdatePlot(update) => match update {
-                    data::PlotUpdate::XValuesChanged => self.rescale_xaxis(),
-                    data::PlotUpdate::YValuesChanged => self.rescale_yaxis(),
+                    data::PlotUpdate::XValuesChanged => {
+                        self.rescale_xaxis();
+                        Action::None
+                    }
+                    data::PlotUpdate::YValuesChanged => {
+                        self.rescale_yaxis();
+                        Action::None
+                    }
                 },
             },
         }
     }
 
-    fn update_chart(&mut self, message: PlotInteraction) -> iced::Task<Message> {
+    fn update_chart(&mut self, message: PlotInteraction) -> Action {
         match message {
             PlotInteraction::Dragged(delta) => {
                 // TODO: Account for multiple y axes
                 self.chart
                     .pan_axes(axis::X_AXIS_ID, axis::Y_AXIS_IDS[0], delta.x, delta.y);
-                iced::Task::none()
+                Action::None
             }
             PlotInteraction::Scrolled(aksel::ScrollEvent {
                 delta, position, ..
@@ -185,50 +199,45 @@ impl State {
                 self.chart
                     .axis_mut(&axis::Y_AXIS_IDS[0])
                     .zoom(zoom_factor, Some(position.y));
-                iced::Task::none()
+
+                Action::None
             }
-            PlotInteraction::ShapeEnter { point, event } => match self
-                .data
-                .edit()
-                .update(data::PlotInteraction::ShapeEnter { point, event }.into())
-            {
-                data::Action::None => iced::Task::none(),
-                data::Action::UpdatePlot(update) => match update {
-                    data::PlotUpdate::XValuesChanged | data::PlotUpdate::YValuesChanged => {
-                        iced::Task::none()
-                    }
-                },
-            },
-            PlotInteraction::ShapeExit => match self
-                .data
-                .edit()
-                .update(data::PlotInteraction::ShapeExit.into())
-            {
-                data::Action::None => iced::Task::none(),
-                data::Action::UpdatePlot(update) => match update {
-                    data::PlotUpdate::XValuesChanged | data::PlotUpdate::YValuesChanged => {
-                        iced::Task::none()
-                    }
-                },
-            },
+            PlotInteraction::ShapeEnter { point, event } => {
+                let idx = self
+                    .data
+                    .get()
+                    .points()
+                    .get_by_id(&point)
+                    .expect("point should exist");
+                self.data
+                    .edit()
+                    .update_plot_interaction(data::PlotInteraction::ShapeEnter { point, event });
+
+                Action::DataHovered(Some(idx))
+            }
+            PlotInteraction::ShapeExit => {
+                self.data
+                    .edit()
+                    .update_plot_interaction(data::PlotInteraction::ShapeExit);
+
+                Action::DataHovered(None)
+            }
         }
     }
 
-    fn rescale_xaxis(&mut self) -> iced::Task<Message> {
+    fn rescale_xaxis(&mut self) {
         let data = self.data.get();
         let axis = data
             .index
             .x
             .to_aksel(&data.df, aksel::axis::Position::Bottom);
         self.chart.set_axis(axis::X_AXIS_ID, axis);
-        iced::Task::none()
     }
 
-    fn rescale_yaxis(&mut self) -> iced::Task<Message> {
+    fn rescale_yaxis(&mut self) {
         let data = self.data.get();
         let axis = data.index.y[0].to_aksel(&data.df);
         self.chart.set_axis(axis::Y_AXIS_IDS[0], axis);
-        iced::Task::none()
     }
 }
 
@@ -259,7 +268,7 @@ mod data {
             axis: axis::ValueAxisId,
             message: trace::GroupMessage,
         },
-        Plot(PlotInteraction),
+        // Plot(PlotInteraction),
     }
 
     #[derive(Debug, Clone)]
@@ -292,6 +301,10 @@ mod data {
                 hovered_id: None,
                 selected_id: None,
             }
+        }
+
+        pub fn points(&self) -> &super::Points {
+            &self.points
         }
 
         pub fn view(&self) -> iced::Element<'_, Message> {
@@ -377,20 +390,20 @@ mod data {
                             Action::UpdatePlot(PlotUpdate::YValuesChanged)
                         }
                     }
-                }
-                Message::Plot(message) => self.update_chart(message),
+                } // Message::Plot(message) => {
+                  //     self.update_plot_interaction(message);
+                  //     Action::None
+                  // }
             }
         }
 
-        fn update_chart(&mut self, message: PlotInteraction) -> Action {
+        pub fn update_plot_interaction(&mut self, message: PlotInteraction) {
             match message {
-                PlotInteraction::ShapeEnter { point, event } => {
+                PlotInteraction::ShapeEnter { point, event: _ } => {
                     let _ = self.hovered_id.insert(point);
-                    Action::None
                 }
                 PlotInteraction::ShapeExit => {
                     let _ = self.hovered_id.take();
-                    Action::None
                 }
             }
         }

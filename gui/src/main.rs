@@ -48,18 +48,14 @@ enum Message {
     OpenDatasetFilePath(PathBuf),
     /// Try to open a dataset directory at the given path.
     OpenDatasetDirPath(PathBuf),
-    /// A dataset is beign loaded.
-    DatasetLoading {
-        path: PathBuf,
-    },
     /// A dataset loaded successfully.
     DatasetLoaded {
         path: PathBuf,
         reader: dataset::Reader,
-        dataframe: pl::DataFrame,
+        df: pl::DataFrame,
     },
     /// An error occurred while loading a dataframe.
-    DatasetError {
+    DatasetLoadError {
         path: PathBuf,
         error: String,
     },
@@ -101,70 +97,22 @@ impl App {
 
 impl App {
     fn new() -> (Self, iced::Task<Message>) {
+        let (workspace, workspace_open) = workspace::Workspace::new();
         let app = Self {
             theme: iced::Theme::CatppuccinFrappe,
-            workspace: Default::default(),
+            workspace,
             datasets: Default::default(),
             windows: Default::default(),
             data_server: Default::default(),
         };
 
-        let (workspace, open) = workspace::Workspace::new();
         (
             app,
-            open.map(|message| match message {
-                workspace::Message::WorkspaceOpened(id) => Message::WindowOpened {
-                    window: id,
-                    kind: WindowKind::Workspace,
-                },
-                _ => panic!("unexpected message received"),
+            workspace_open.map(|window| Message::WindowOpened {
+                window,
+                kind: WindowKind::Workspace,
             }),
         )
-    }
-
-    fn update(&mut self, message: Message) -> iced::Task<Message> {
-        #[cfg(feature = "tracing")]
-        ::tracing::trace!(message=?message);
-
-        match message {
-            Message::AppClosed => self.app_closed(),
-            Message::Workspace(message) => self.workspace_message(message),
-            Message::Dataset { id, message } => self.dataset_message(id, message),
-            Message::DataServer(message) => self.data_server(message),
-            Message::DataServerUpdate(update) => self.data_server_update(update),
-            Message::WindowOpened { window, kind } => self.window_opened(window, kind),
-            Message::WindowClosed(id) => self.window_closed(id),
-            Message::OpenDatasetFilePath(path) => self.open_dataset_file_path(path),
-            Message::OpenDatasetDirPath(path) => self.open_dataset_dir_path(path),
-            Message::DatasetLoading { path } => {
-                let action = self
-                    .workspace
-                    .update(workspace::Message::DatasetLoading { path });
-                assert!(matches!(action, workspace::Action::None));
-
-                iced::Task::none()
-            }
-            Message::DatasetLoaded {
-                path,
-                reader,
-                dataframe,
-            } => self.dataset_loaded(path, reader, dataframe),
-            Message::DatasetError { path, error } => {
-                let action = self
-                    .workspace
-                    .update(workspace::Message::DatasetError { path, error });
-                assert!(matches!(action, workspace::Action::None));
-
-                iced::Task::none()
-            }
-            Message::DatasetLastWindowClosed(dataset) => {
-                self.datasets
-                    .remove(&dataset)
-                    .expect("dataset should exist");
-                iced::Task::done(workspace::Message::DatasetClosed { path: dataset }.into())
-            }
-            Message::ClearDatasets => self.clear_datasets(),
-        }
     }
 
     pub fn view(&self, window: window::Id) -> iced::Element<'_, Message> {
@@ -193,77 +141,37 @@ impl App {
 }
 
 impl App {
-    fn workspace_message(&mut self, message: workspace::Message) -> iced::Task<Message> {
-        let action = self.workspace.update(message);
+    fn update(&mut self, message: Message) -> iced::Task<Message> {
         #[cfg(feature = "tracing")]
-        ::tracing::trace!(?action);
+        ::tracing::trace!(message=?message);
 
-        match action {
-            workspace::Action::None => iced::Task::none(),
-            workspace::Action::Run(task) => task.map(Message::Workspace),
-            workspace::Action::OpenDatasetFile(path) => self.open_dataset_file_path(path),
-            workspace::Action::OpenDatasetDir(path) => self.open_dataset_dir_path(path),
-            #[cfg(feature = "project")]
-            workspace::Action::SaveProject(path) => self.save_project(path),
-            #[cfg(feature = "project")]
-            workspace::Action::OpenProject(path) => self.open_project(path),
-        }
-    }
+        match message {
+            Message::AppClosed => self.exit(),
+            Message::Workspace(message) => self.workspace_message(message),
+            Message::Dataset { id, message } => self.dataset_message(id, message),
+            Message::DataServer(message) => self.data_server(message),
+            Message::DataServerUpdate(update) => self.data_server_update(update),
+            Message::WindowOpened { window, kind } => self.window_opened(window, kind),
+            Message::WindowClosed(id) => self.window_closed(id),
+            Message::OpenDatasetFilePath(path) => self.try_load_dataset_file(path),
+            Message::OpenDatasetDirPath(path) => self.try_load_dataset_dir(path),
+            Message::DatasetLoaded { path, reader, df } => self.open_dataset(path, reader, df),
+            Message::DatasetLoadError { path, error } => {
+                let action = self
+                    .workspace
+                    .update(workspace::Message::DatasetError { path, error });
+                assert!(matches!(action, workspace::Action::None));
 
-    #[cfg(feature = "project")]
-    fn save_project(&self, path: PathBuf) -> iced::Task<Message> {
-        let state = project::State::new(self);
-        match state.save(&path) {
-            Ok(_) => iced::Task::none(),
-            Err(err) => {
-                #[cfg(feature = "tracing")]
-                ::tracing::error!(?err);
-
-                todo!("could not save project: {err:?}")
+                iced::Task::none()
             }
-        }
-    }
-
-    #[cfg(feature = "project")]
-    fn open_project(&mut self, path: PathBuf) -> iced::Task<Message> {
-        match project::State::from_file(&path) {
-            Ok(project) => self.clear_datasets().chain(self.load_project(&project)),
-            Err(err) => {
-                #[cfg(feature = "tracing")]
-                ::tracing::error!(?err);
-
-                todo!("could not load project: {err:?}");
+            Message::DatasetLastWindowClosed(dataset) => {
+                self.datasets
+                    .remove(&dataset)
+                    .expect("dataset should exist");
+                iced::Task::done(workspace::Message::DatasetClosed { path: dataset }.into())
             }
+            Message::ClearDatasets => self.clear_datasets(),
         }
-    }
-
-    #[cfg(feature = "project")]
-    fn load_project(&mut self, project: &project::State) -> iced::Task<Message> {
-        let tasks = project.datasets.iter().map(|dataset| {
-            if dataset.path.is_file() {
-                self.open_dataset_file_path(&dataset.path)
-            } else if dataset.path.is_dir() {
-                self.open_dataset_dir_path(&dataset.path)
-            } else if !dataset.path.exists() {
-                iced::Task::done(
-                    workspace::Message::DatasetError {
-                        path: dataset.path.clone(),
-                        error: "does not exist".to_string(),
-                    }
-                    .into(),
-                )
-            } else {
-                iced::Task::done(
-                    workspace::Message::DatasetError {
-                        path: dataset.path.clone(),
-                        error: "unknown".to_string(),
-                    }
-                    .into(),
-                )
-            }
-        });
-
-        iced::Task::batch(tasks)
     }
 
     fn dataset_message(&mut self, id: PathBuf, message: dataset::Message) -> iced::Task<Message> {
@@ -407,14 +315,12 @@ impl App {
 
     fn window_closed(&mut self, id: iced::window::Id) -> iced::Task<Message> {
         if self.windows.len() == 1 {
-            return iced::Task::done(Message::AppClosed);
+            return self.exit();
         }
 
         let window = self.windows.remove(&id).expect("window should exist");
         match window {
-            WindowKind::Workspace => {
-                iced::Task::done(workspace::Message::WorkspaceClosed(id).into())
-            }
+            WindowKind::Workspace => {}
             WindowKind::Dataset(path) => {
                 let last_dataset_window = !self.windows.values().any(|window| {
                     if let WindowKind::DatasetChild { dataset, .. } = window {
@@ -468,7 +374,7 @@ impl App {
         }
     }
 
-    fn app_closed(&mut self) -> iced::Task<Message> {
+    fn exit(&mut self) -> iced::Task<Message> {
         // TODO: Kill data server
         // self.data_server
         //     .kill
@@ -476,122 +382,6 @@ impl App {
         //     .expect("kill message sent");
 
         iced::exit()
-    }
-
-    fn open_dataset_file_path(&mut self, path: impl AsRef<Path>) -> iced::Task<Message> {
-        let path = path.as_ref();
-        if let Some(dataset) = self.datasets.get(path) {
-            return iced::window::gain_focus(dataset.window_id().clone());
-        }
-
-        iced::Task::batch([
-            Task::done(Message::DatasetLoading {
-                path: path.to_path_buf(),
-            }),
-            iced::Task::future({
-                let path = path.to_path_buf();
-                async move {
-                    let result = tokio::task::spawn_blocking({
-                        let path = path.clone();
-                        move || match Self::open_dataset_file(&path) {
-                            Ok((reader, dataframe)) => Message::DatasetLoaded {
-                                path: path.clone(),
-                                reader,
-                                dataframe,
-                            },
-                            Err(err) => workspace::Message::DatasetError {
-                                path: path.clone(),
-                                error: format!("{err:?}"),
-                            }
-                            .into(),
-                        }
-                    })
-                    .await;
-                    match result {
-                        Ok(msg) => msg.into(),
-                        Err(err) => workspace::Message::DatasetError {
-                            path: path.clone(),
-                            error: format!("Could not load dataset: {err:?}"),
-                        }
-                        .into(),
-                    }
-                }
-            }),
-        ])
-    }
-
-    fn open_dataset_dir_path(&mut self, path: impl AsRef<Path>) -> iced::Task<Message> {
-        let path = path.as_ref();
-        if let Some(dataset) = self.datasets.get(path) {
-            todo!("focus dataset");
-        }
-
-        iced::Task::batch([
-            Task::done(Message::DatasetLoading {
-                path: path.to_path_buf(),
-            }),
-            iced::Task::future({
-                let path = path.to_path_buf();
-                async move {
-                    let result = tokio::task::spawn_blocking({
-                        let path = path.clone();
-                        move || match Self::open_dataset_dir(&path) {
-                            Ok((reader, dataframe)) => Message::DatasetLoaded {
-                                path: path.clone(),
-                                reader,
-                                dataframe,
-                            },
-                            Err(err) => workspace::Message::DatasetError {
-                                path: path.clone(),
-                                error: format!("{err:?}"),
-                            }
-                            .into(),
-                        }
-                    })
-                    .await;
-                    match result {
-                        Ok(msg) => msg.into(),
-                        Err(err) => workspace::Message::DatasetError {
-                            path: path.clone(),
-                            error: format!("Could not load dataset: {err:?}"),
-                        }
-                        .into(),
-                    }
-                }
-            }),
-        ])
-    }
-
-    fn dataset_loaded(
-        &mut self,
-        path: impl Into<PathBuf>,
-        reader: dataset::Reader,
-        dataframe: pl::DataFrame,
-    ) -> iced::Task<Message> {
-        let path = path.into();
-
-        let (dataset, open) = dataset::Dataset::new(path.clone(), reader, dataframe);
-        let loaded = Task::done(
-            workspace::Message::DatasetLoaded {
-                path: path.clone(),
-                kind: dataset.kind(),
-            }
-            .into(),
-        );
-
-        self.datasets.insert(path.clone(), dataset);
-        let open = open.map(move |message| {
-            let dataset::Message::WindowOpened(id) = message else {
-                panic!("unexpected message");
-            };
-
-            Message::WindowOpened {
-                window: id,
-                kind: WindowKind::Dataset(path.clone()),
-            }
-        });
-
-        Task::batch([open, loaded])
     }
 
     fn clear_datasets(&mut self) -> iced::Task<Message> {
@@ -609,7 +399,63 @@ impl App {
 }
 
 impl App {
-    fn open_dataset_file(
+    fn workspace_message(&mut self, message: workspace::Message) -> iced::Task<Message> {
+        let action = self.workspace.update(message);
+        #[cfg(feature = "tracing")]
+        ::tracing::trace!(?action);
+
+        match action {
+            workspace::Action::None => iced::Task::none(),
+            workspace::Action::Run(task) => task.map(Message::Workspace),
+            workspace::Action::LoadDatasetFile(path) => self.try_load_dataset_file(path),
+            workspace::Action::LoadDatasetDir(path) => self.try_load_dataset_dir(path),
+            #[cfg(feature = "project")]
+            workspace::Action::SaveProject(path) => self.save_project(path),
+            #[cfg(feature = "project")]
+            workspace::Action::OpenProject(path) => self.open_project(path),
+        }
+    }
+
+    fn try_load_dataset_file(&mut self, path: impl Into<PathBuf>) -> iced::Task<Message> {
+        let path = path.into();
+        self.workspace.dataset_set_loading(path.clone());
+
+        iced::Task::perform(
+            tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || Self::load_dataset_file(&path)
+            }),
+            move |result| match result {
+                Ok(dataset) => match dataset {
+                    Ok((reader, df)) => Message::DatasetLoaded {
+                        path: path.clone(),
+                        reader,
+                        df,
+                    },
+                    Err(err) => {
+                        #[cfg(feature = "tracing")]
+                        ::tracing::error!("tokio task failed while loading dataset file: {err:?}");
+
+                        Message::DatasetLoadError {
+                            path: path.clone(),
+                            error: format!("{err:?}"),
+                        }
+                    }
+                },
+                Err(err) => {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::error!("tokio task failed while loading dataset file: {err}");
+
+                    Message::DatasetLoadError {
+                        path: path.clone(),
+                        error: err.to_string(),
+                    }
+                }
+            },
+        )
+    }
+
+    fn load_dataset_file(
         path: impl AsRef<Path>,
     ) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset> {
         let Some(dataset_type) = jpk::dataset::DatasetType::from_fs(&path)? else {
@@ -629,7 +475,83 @@ impl App {
         }
     }
 
-    fn open_dataset_dir(
+    // fn open_dataset_file_path(&mut self, path: impl AsRef<Path>) -> iced::Task<Message> {
+    //     let path = path.as_ref();
+    //     if let Some(dataset) = self.datasets.get(path) {
+    //         return iced::window::gain_focus(dataset.window_id().clone());
+    //     }
+
+    //     self.workspace.dataset_set_loading(path.to_path_buf());
+    //     iced::Task::future({
+    //         let path = path.to_path_buf();
+    //         async move {
+    //             let result = tokio::task::spawn_blocking({
+    //                 let path = path.clone();
+    //                 move || match Self::open_dataset_file(&path) {
+    //                     Ok((reader, dataframe)) => Message::DatasetLoaded {
+    //                         path: path.clone(),
+    //                         reader,
+    //                         dataframe,
+    //                     },
+    //                     Err(err) => workspace::Message::DatasetError {
+    //                         path: path.clone(),
+    //                         error: format!("{err:?}"),
+    //                     }
+    //                     .into(),
+    //                 }
+    //             })
+    //             .await;
+    //             match result {
+    //                 Ok(msg) => msg.into(),
+    //                 Err(err) => workspace::Message::DatasetError {
+    //                     path: path.clone(),
+    //                     error: format!("Could not load dataset: {err:?}"),
+    //                 }
+    //                 .into(),
+    //             }
+    //         }
+    //     })
+    // }
+
+    // fn open_dataset_dir_path(&mut self, path: impl AsRef<Path>) -> iced::Task<Message> {
+    //     let path = path.as_ref();
+    //     if let Some(dataset) = self.datasets.get(path) {
+    //         todo!("focus dataset");
+    //     }
+
+    //     self.workspace.dataset_set_loading(path.to_path_buf());
+    //     iced::Task::future({
+    //         let path = path.to_path_buf();
+    //         async move {
+    //             let result = tokio::task::spawn_blocking({
+    //                 let path = path.clone();
+    //                 move || match Self::open_dataset_dir(&path) {
+    //                     Ok((reader, df)) => Message::DatasetLoaded {
+    //                         path: path.clone(),
+    //                         reader,
+    //                         df,
+    //                     },
+    //                     Err(err) => workspace::Message::DatasetError {
+    //                         path: path.clone(),
+    //                         error: format!("{err:?}"),
+    //                     }
+    //                     .into(),
+    //                 }
+    //             })
+    //             .await;
+    //             match result {
+    //                 Ok(msg) => msg.into(),
+    //                 Err(err) => workspace::Message::DatasetError {
+    //                     path: path.clone(),
+    //                     error: format!("Could not load dataset: {err:?}"),
+    //                 }
+    //                 .into(),
+    //             }
+    //         }
+    //     })
+    // }
+
+    fn try_load_dataset_dir(
         path: impl AsRef<Path>,
     ) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset> {
         let Some(dataset_type) = jpk::dataset::DatasetType::from_fs(&path)? else {
@@ -647,6 +569,87 @@ impl App {
                 panic!("directory should not be identified as single dataset type")
             }
         }
+    }
+
+    fn open_dataset(
+        &mut self,
+        path: impl Into<PathBuf>,
+        reader: dataset::Reader,
+        df: pl::DataFrame,
+    ) -> iced::Task<Message> {
+        let path = path.into();
+        let (dataset, open) = dataset::Dataset::new(path.clone(), reader, df);
+        self.workspace.dataset_loaded(path.clone(), dataset.kind());
+        self.datasets.insert(path.clone(), dataset);
+
+        open.then(move |window| {
+            iced::Task::batch([
+                iced::window::gain_focus(window.clone()),
+                iced::Task::done(
+                    workspace::Message::DatasetWindowOpened {
+                        path: path.clone(),
+                        window,
+                    }
+                    .into(),
+                ),
+            ])
+        })
+    }
+}
+
+#[cfg(feature = "project")]
+impl App {
+    fn save_project(&self, path: PathBuf) -> iced::Task<Message> {
+        let state = project::State::new(self);
+        match state.save(&path) {
+            Ok(_) => iced::Task::none(),
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::error!(?err);
+
+                todo!("could not save project: {err:?}")
+            }
+        }
+    }
+
+    fn open_project(&mut self, path: PathBuf) -> iced::Task<Message> {
+        match project::State::from_file(&path) {
+            Ok(project) => self.clear_datasets().chain(self.load_project(&project)),
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::error!(?err);
+
+                todo!("could not load project: {err:?}");
+            }
+        }
+    }
+
+    fn load_project(&mut self, project: &project::State) -> iced::Task<Message> {
+        let tasks = project.datasets.iter().map(|dataset| {
+            if dataset.path.is_file() {
+                self.try_load_dataset_file(&dataset.path)
+            } else if dataset.path.is_dir() {
+                self.try_load_dataset_dir(&dataset.path)
+            } else if !dataset.path.exists() {
+                iced::Task::done(
+                    workspace::Message::DatasetError {
+                        path: dataset.path.clone(),
+                        error: "does not exist".to_string(),
+                    }
+                    .into(),
+                )
+            } else {
+                iced::Task::done(
+                    workspace::Message::DatasetError {
+                        path: dataset.path.clone(),
+                        error: "unknown".to_string(),
+                    }
+                    .into(),
+                )
+            }
+        });
+
+        iced::Task::batch(tasks)
     }
 }
 

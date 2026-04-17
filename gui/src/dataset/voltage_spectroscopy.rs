@@ -43,9 +43,3 @@ impl State {
         scatter::Options::new(scatter::Index::new(x, vec![y]))
     }
 }
-
-impl super::IsFileCollection for State {
-    fn is_file_collection(&self) -> bool {
-        false
-    }
-}

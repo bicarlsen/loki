@@ -25,6 +25,11 @@ impl From<heatmap::Message> for Message {
     }
 }
 
+pub enum Action {
+    None,
+    DataHovered(Option<usize>),
+}
+
 pub struct State {
     mode: mode::Mode,
 }
@@ -42,7 +47,7 @@ impl State {
 }
 
 impl State {
-    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+    pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::DataframeChange(df) => self.dataframe_change(df),
             Message::SetMode(mode) => todo!("{mode:?}"),
@@ -51,14 +56,18 @@ impl State {
                     let mode::Mode::Scatter(state) = &mut self.mode else {
                         panic!("invalid message for state");
                     };
-                    state.update(message).map(Into::into)
+
+                    match state.update(message) {
+                        scatter::Action::None => Action::None,
+                        scatter::Action::DataHovered(idx) => Action::DataHovered(idx),
+                    }
                 }
                 mode::Message::Heatmap(message) => todo!(),
             },
         }
     }
 
-    fn dataframe_change(&mut self, df: pl::DataFrame) -> iced::Task<Message> {
+    fn dataframe_change(&mut self, df: pl::DataFrame) -> Action {
         todo!("dataframe change");
     }
 }
