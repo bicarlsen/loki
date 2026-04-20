@@ -5,8 +5,10 @@ use jpk_reader as jpk;
 use polars::prelude as pl;
 use std::{borrow::Cow, path::PathBuf};
 
+mod data_table;
 pub mod pipeline;
 mod plot;
+mod settings;
 mod voltage_spectroscopy;
 mod voltage_spectroscopy_collection;
 
@@ -86,9 +88,12 @@ pub struct Children {
     pub(crate) files_browser: Option<(iced::window::Id, ())>,
 }
 
+type SharedDataframe = std::sync::Arc<std::sync::RwLock<pl::DataFrame>>;
+
 pub struct Dataset {
     path: PathBuf,
     window_id: iced::window::Id,
+    df: SharedDataframe,
     reader: Reader,
     pipeline: pipeline::Pipeline,
     state: DatasetKind,
@@ -127,9 +132,11 @@ impl Dataset {
         reader: Reader,
         df: pl::DataFrame,
     ) -> (Self, iced::Task<iced::window::Id>) {
+        let df_pipeline = df.clone();
+        let df = std::sync::Arc::new(std::sync::RwLock::new(df));
         let (state, plot) = match &reader {
             Reader::VoltageSpectroscopy(_) => {
-                let state = voltage_spectroscopy::State::new(df.clone());
+                let state = voltage_spectroscopy::State::new();
                 let plot =
                     plot::State::new(df.clone(), voltage_spectroscopy::State::default_options());
                 (state.into(), plot.into())
@@ -149,8 +156,9 @@ impl Dataset {
             Self {
                 path: path.into(),
                 window_id,
+                df,
                 reader,
-                pipeline: pipeline::Pipeline::new(df),
+                pipeline: pipeline::Pipeline::new(df_pipeline),
                 state,
                 plot: plot,
                 children: Children::default(),
@@ -197,8 +205,9 @@ impl Dataset {
                     self.children.data_table.is_none(),
                     "data table already exists"
                 );
-                let data_table = data_table::DataTable::new(self.pipeline.output().clone());
+                let data_table = data_table::DataTable::new(self.df.clone());
                 self.children.data_table = Some((id.clone(), data_table));
+
                 Action::ChildWindowOpened {
                     window: id.clone(),
                     kind: ChildWindowType::DataTable,
@@ -234,13 +243,6 @@ impl Dataset {
                     window: id,
                     kind: ChildWindowType::Pipeline,
                 }
-                // iced::Task::batch([
-                //     iced::Task::done(Message::WindowOpened(id.clone())),
-                //     iced::Task::done(Message::ChildWindowOpened {
-                //         window: id.clone(),
-                //         kind: ChildWindowType::Pipeline,
-                //     }),
-                // ])
             }
             Message::PipelineClosed => {
                 assert!(self.children.pipeline.is_some());
@@ -256,52 +258,23 @@ impl Dataset {
                 self.children.files_browser = None;
                 Action::None
             }
-            Message::Plot(message) => {
-                // let data_table_msg =
-                //     if let Some((_, data_table)) = self.children.data_table.as_mut() {
-                //         let data_table_msg = match &message {
-                // plot::Message::Data(figure::chart::Message::ShapeEnter { point, .. }) => {
-                //     let idx = self
-                //         .plot
-                //         .record_idx_by_point_id(point)
-                //         .expect("record should exist");
-
-                //     Some(data_table::Message::HighlightRecord(idx))
-                // }
-                // plot::Message::Data(figure::chart::Message::ShapeExit) => {
-                //     Some(data_table::Message::ClearHighlight)
-                // }
-                //     _ => None,
-                // };
-
-                //     match data_table_msg {
-                //         None => iced::Task::none(),
-                //         Some(msg) => data_table.update(msg).map(Into::into),
-                //     }
-                // } else {
-                //     iced::Task::none()
-                // };
-
-                // iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
-
-                match self.plot.update(message) {
-                    plot::Action::None => Action::None,
-                    plot::Action::DataHovered(idx) => {
-                        if let Some((_, data_table)) = self.children.data_table.as_mut() {
-                            let message = if let Some(idx) = idx {
-                                data_table::Message::HighlightRecord(idx)
-                            } else {
-                                data_table::Message::ClearHighlight
-                            };
-                            match data_table.update(message) {
-                                data_table::Action::None => Action::None,
-                            }
+            Message::Plot(message) => match self.plot.update(message) {
+                plot::Action::None => Action::None,
+                plot::Action::DataHovered(idx) => {
+                    if let Some((_, data_table)) = self.children.data_table.as_mut() {
+                        let message = if let Some(idx) = idx {
+                            data_table::Message::HighlightRecord(idx)
                         } else {
-                            Action::None
+                            data_table::Message::ClearHighlight
+                        };
+                        match data_table.update(message) {
+                            data_table::Action::None => Action::None,
                         }
+                    } else {
+                        Action::None
                     }
                 }
-            }
+            },
             Message::Settings(message) => {
                 if let settings::Message::SetMode(mode) = &message {
                     // self.plot.mode(mode);
@@ -414,151 +387,6 @@ impl Dataset {
         match self.pipeline.update(message) {
             pipeline::Action::None => Action::None,
             pipeline::Action::Run(task) => Action::Run(task.map(Message::Pipeline)),
-        }
-    }
-}
-
-mod settings {
-    use crate::dataset::plot;
-
-    #[derive(Debug, Clone)]
-    pub enum Message {
-        SetMode(plot::mode::Kind),
-    }
-
-    pub enum Action {
-        None,
-    }
-
-    #[derive(Default)]
-    #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
-    pub struct Settings {
-        /// Plot mode.
-        mode: super::plot::mode::Kind,
-    }
-
-    impl Settings {
-        pub fn new() -> Self {
-            Default::default()
-        }
-
-        pub fn update(&mut self, message: Message) -> Action {
-            match message {
-                Message::SetMode(mode) => {
-                    self.mode = mode;
-                    Action::None
-                }
-            }
-        }
-
-        pub fn view(&self) -> iced::Element<'_, Message> {
-            let title = iced::widget::text("Settings");
-
-            let pl_mode = iced::widget::pick_list(
-                [
-                    super::plot::mode::Kind::Scatter,
-                    super::plot::mode::Kind::Heatmap,
-                ],
-                Some(self.mode),
-                Message::SetMode,
-            );
-            let pl_mode = iced::widget::row![iced::widget::text("Plot mode"), pl_mode];
-
-            iced::widget::column![title, pl_mode].into()
-        }
-    }
-}
-
-mod data_table {
-    use iced::widget;
-    use polars::prelude as pl;
-
-    #[derive(Debug, Clone)]
-    pub enum Message {
-        DataframeUpdated(pl::DataFrame),
-        /// Highlight the record at the given index.
-        HighlightRecord(usize),
-        /// No record should be highlighted.
-        ClearHighlight,
-    }
-
-    pub enum Action {
-        None,
-    }
-
-    pub struct DataTable {
-        df: pl::DataFrame,
-        highlight: Option<usize>,
-    }
-
-    impl DataTable {
-        pub fn new(df: pl::DataFrame) -> Self {
-            Self {
-                df,
-                highlight: Default::default(),
-            }
-        }
-
-        pub fn update(&mut self, message: Message) -> Action {
-            match message {
-                Message::DataframeUpdated(dataframe) => {
-                    self.df = dataframe;
-                    Action::None
-                }
-                Message::HighlightRecord(idx) => {
-                    let _ = self.highlight.insert(idx);
-                    Action::None
-                }
-                Message::ClearHighlight => {
-                    let _ = self.highlight.take();
-                    Action::None
-                }
-            }
-        }
-
-        pub fn view(
-            &self,
-            theme: &iced::advanced::graphics::core::Theme,
-        ) -> iced::Element<'_, Message> {
-            use widget::text;
-
-            // TODO: Headers should be sticky
-            // TODO: Columns fit to data instead of header title causing overflow
-            let columns = self.df.schema().iter().map(|(name, _dtype)| {
-                widget::table::column(name.as_str(), |idx: usize| {
-                    let col = self.df.column(name.as_str()).unwrap();
-                    let mut text = match col.get(idx).unwrap() {
-                        pl::AnyValue::Null => text(""),
-                        pl::AnyValue::Boolean(value) => {
-                            if value {
-                                text("true")
-                            } else {
-                                text("false")
-                            }
-                        }
-                        pl::AnyValue::String(value) => text(value),
-                        pl::AnyValue::Float64(value) => text(format!("{value:?}")),
-                        pl::AnyValue::UInt8(value) => text(format!("{value:?}")),
-                        pl::AnyValue::Int64(value) => text(format!("{value:?}")),
-                        pl::AnyValue::Int128(value) => text(format!("{value:?}")),
-                        value => todo!("display {value:?}"),
-                    };
-                    if let Some(highlight) = &self.highlight {
-                        if idx == *highlight {
-                            text = text.color(theme.palette().success);
-                        }
-                    }
-                    text
-                })
-            });
-
-            let table = widget::table::Table::new(columns, 0..self.df.height());
-            widget::scrollable(table)
-                .direction(iced::widget::scrollable::Direction::Both {
-                    vertical: iced::widget::scrollable::Scrollbar::new(),
-                    horizontal: iced::widget::scrollable::Scrollbar::new(),
-                })
-                .into()
         }
     }
 }

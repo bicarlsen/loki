@@ -1,5 +1,6 @@
 //! Heatmap.
 use polars::prelude as pl;
+use super::SharedDataframe;
 
 #[derive(Debug, Clone)]
 pub struct Options {}
@@ -23,7 +24,7 @@ pub enum Message {}
 pub(super) struct State {}
 
 impl State {
-    pub fn new(df: pl::DataFrame, options: Options) -> Self {
+    pub fn new(df: SharedDataframe, options: Options) -> Self {
         Self {}
     }
 

@@ -6,7 +6,6 @@ const DEFAULT_X_COL: &str = "cafmBias";
 const DEFAULT_Y_COL: &str = "cafmCurrent";
 
 pub struct State {
-    df: pl::DataFrame,
     x_col: &'static str,
     y_col: &'static str,
 }
@@ -22,9 +21,8 @@ pub enum Message {
 }
 
 impl State {
-    pub fn new(dataframe: pl::DataFrame) -> Self {
+    pub fn new() -> Self {
         Self {
-            df: dataframe,
             x_col: DEFAULT_X_COL,
             y_col: DEFAULT_Y_COL,
         }

@@ -84,8 +84,6 @@ pub struct TransformScriptRunner {
 pub(super) struct Pipeline {
     /// Original dataframe.
     raw: pl::DataFrame,
-    /// Output of `raw` after being passed through `transforms`.
-    output: pl::DataFrame,
     transforms: Vec<Transform>,
     cache: HashMap<TransformId, pl::DataFrame>,
 }
@@ -93,15 +91,10 @@ pub(super) struct Pipeline {
 impl Pipeline {
     pub(super) fn new(df: pl::DataFrame) -> Self {
         Self {
-            raw: df.clone(),
-            output: df.clone(),
+            raw: df,
             transforms: Default::default(),
             cache: Default::default(),
         }
-    }
-
-    pub(super) fn output(&self) -> &pl::DataFrame {
-        &self.output
     }
 
     fn push(&mut self, transform: TransformKind) -> TransformId {

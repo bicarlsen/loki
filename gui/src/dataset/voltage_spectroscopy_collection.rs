@@ -23,8 +23,8 @@ pub enum Action {
 }
 
 impl State {
-    pub fn new(df: pl::DataFrame) -> Self {
-        let df = photodiode_fit(&df);
+    pub fn new(df: std::sync::Arc<std::sync::RwLock<pl::DataFrame>>) -> Self {
+        let df = photodiode_fit(&df.read().expect("dataframe should be readable"));
         let df = df.select(["x", "y", "ff"]).unwrap();
         let df = df
             .lazy()

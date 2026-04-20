@@ -1,6 +1,6 @@
 //! Scatter plot.
 
-use super::{chart, utils};
+use super::{SharedDataframe, chart, utils};
 use iced_aksel::{self as aksel};
 use polars::prelude as pl;
 
@@ -95,8 +95,11 @@ pub(super) struct State {
 }
 
 impl State {
-    pub fn new(df: pl::DataFrame, options: Options) -> Self {
-        let chart = Self::chart(&df, &options.index);
+    pub fn new(df: SharedDataframe, options: Options) -> Self {
+        let chart = Self::chart(
+            &df.read().expect("dataframe should be readable"),
+            &options.index,
+        );
         let data = data::State::new(df, options.index.clone());
 
         Self {
@@ -227,21 +230,23 @@ impl State {
 
     fn rescale_xaxis(&mut self) {
         let data = self.data.get();
-        let axis = data
-            .index
-            .x
-            .to_aksel(&data.df, aksel::axis::Position::Bottom);
+        let axis = data.index.x.to_aksel(
+            &data.df.read().expect("dataframe should be readable"),
+            aksel::axis::Position::Bottom,
+        );
         self.chart.set_axis(axis::X_AXIS_ID, axis);
     }
 
     fn rescale_yaxis(&mut self) {
         let data = self.data.get();
-        let axis = data.index.y[0].to_aksel(&data.df);
+        let axis = data.index.y[0].to_aksel(&data.df.read().expect("dataframe should be readable"));
         self.chart.set_axis(axis::Y_AXIS_IDS[0], axis);
     }
 }
 
 mod data {
+    use crate::dataset::SharedDataframe;
+
     use super::super::{chart, utils};
     use super::{axis, trace};
     use iced_aksel::{self as aksel, interaction::IntoArea};
@@ -284,7 +289,7 @@ mod data {
     }
 
     pub(super) struct State {
-        pub(super) df: pl::DataFrame,
+        pub(super) df: SharedDataframe,
         pub(super) index: super::Index,
         points: super::Points,
         hovered_id: Option<aksel::interaction::Id>,
@@ -292,8 +297,9 @@ mod data {
     }
 
     impl State {
-        pub fn new(df: pl::DataFrame, index: super::Index) -> Self {
-            let points = super::Points::new(df.height());
+        pub fn new(df: SharedDataframe, index: super::Index) -> Self {
+            let points =
+                super::Points::new(df.read().expect("dataframe should be readable").height());
             Self {
                 df,
                 index,
@@ -332,6 +338,8 @@ mod data {
         {
             let columns = self
                 .df
+                .read()
+                .expect("dataframe should be readable")
                 .schema()
                 .iter()
                 .map(|(name, _)| name.to_string())
@@ -363,6 +371,8 @@ mod data {
         fn pl_values_axis<'a>(&'a self, axis: &'a axis::ValueAxis) -> iced::Element<'a, Message> {
             let columns = self
                 .df
+                .read()
+                .expect("dataframe should be readable")
                 .schema()
                 .iter()
                 .map(|(name, _)| name.to_string())
@@ -425,6 +435,7 @@ mod data {
             let num_traces = axis.traces().len();
             assert_ne!(num_traces, 0, "axis traces must not be empty");
 
+            let df = self.df.read().expect("dataframe shoudl be readable");
             let base_color_lch = utils::color_to_lch(base_color);
             let trace_color_shift = 180.0 / num_traces as f32;
             for (idx, trace) in axis.traces().iter().enumerate() {
@@ -435,17 +446,17 @@ mod data {
                 let mut colors = match trace.color() {
                     trace::Color::Default => {
                         let color = utils::lch_to_color(trace_color);
-                        vec![color; self.df.height()]
+                        vec![color; df.height()]
                     }
                     trace::Color::Column(column) => {
-                        let colors = self.df.column(&column).expect("color column should exist");
+                        let colors = df.column(&column).expect("color column should exist");
                         let (min, max) = utils::column_minmax_f64(colors);
                         let colors = utils::column_to_values_f64(colors);
 
                         let range = max - min;
                         if approx::abs_diff_eq!(range, 0.0) {
                             let color = utils::lch_to_color(trace_color);
-                            vec![color; self.df.height()]
+                            vec![color; df.height()]
                         } else {
                             colors
                                 .into_iter()
@@ -482,16 +493,17 @@ mod data {
             colors: Vec<iced::Color>,
             trace: &trace::Trace,
         ) {
+            let df = self.df.read().expect("dataframe should be readable");
             let column_label = trace.column();
-            let y = self.df.column(column_label).unwrap();
+            let y = df.column(column_label).unwrap();
             let y = super::utils::column_to_values_f64(y);
 
             let x = match &self.index.x.values {
                 axis::IndexValues::Series(column) => {
-                    let x = self.df.column(&column).unwrap();
+                    let x = df.column(&column).unwrap();
                     super::utils::column_to_values_f64(x)
                 }
-                axis::IndexValues::Index => (0..self.df.height())
+                axis::IndexValues::Index => (0..df.height())
                     .map(|x| x as chart::ValueType)
                     .collect::<Vec<_>>(),
             };
@@ -899,11 +911,11 @@ mod trace {
             id
         }
 
-        pub fn minmax_f64(&self, dataframe: &pl::DataFrame) -> (f64, f64) {
+        pub fn minmax_f64(&self, df: &pl::DataFrame) -> (f64, f64) {
             let mut min = f64::MAX;
             let mut max = f64::MIN;
             for trace in self.traces.iter() {
-                let (tmin, tmax) = trace.minmax_f64(dataframe);
+                let (tmin, tmax) = trace.minmax_f64(df);
                 if tmin < min {
                     min = tmin;
                 }
@@ -1035,10 +1047,10 @@ mod trace {
             self.marker_size
         }
 
-        pub fn minmax_f64(&self, dataframe: &pl::DataFrame) -> (f64, f64) {
+        pub fn minmax_f64(&self, df: &pl::DataFrame) -> (f64, f64) {
             let mut min = f64::MAX;
             let mut max = f64::MIN;
-            let column = dataframe.column(&self.column).unwrap();
+            let column = df.column(&self.column).unwrap();
             let (cmin, cmax) = utils::column_minmax_f64(column);
             if cmin < min {
                 min = cmin;

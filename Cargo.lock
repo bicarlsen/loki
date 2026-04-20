@@ -2619,6 +2619,7 @@ dependencies = [
 [[package]]
 name = "jpk_reader"
 version = "0.0.1"
+source = "git+https://github.com/bicarlsen/jpk_reader?branch=dev#6a0fd043ef1860d9a6fbea29236362b3fa8f8e2e"
 dependencies = [
  "derive_more",
  "polars",

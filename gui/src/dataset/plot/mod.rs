@@ -1,6 +1,7 @@
 //! Data set plot.
 // TODO: Reset button to reset plot scaling and panning.
 
+use super::SharedDataframe;
 use polars::prelude as pl;
 
 pub mod heatmap;
@@ -35,7 +36,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(df: pl::DataFrame, options: impl Into<mode::Options>) -> Self {
+    pub fn new(df: SharedDataframe, options: impl Into<mode::Options>) -> Self {
         let options = options.into();
         let mode = match options {
             mode::Options::Scatter(options) => scatter::State::new(df, options).into(),
