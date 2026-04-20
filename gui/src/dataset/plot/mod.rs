@@ -125,7 +125,7 @@ pub mod mode {
     use super::{heatmap, scatter};
 
     #[derive(Debug, Clone, derive_more::From)]
-    pub(super) enum Message {
+    pub enum Message {
         Scatter(scatter::Message),
         Heatmap(heatmap::Message),
     }
@@ -147,7 +147,7 @@ pub mod mode {
     }
 
     #[derive(Debug, Clone, derive_more::From)]
-    pub(super) enum Options {
+    pub enum Options {
         Scatter(scatter::Options),
         Heatmap(heatmap::Options),
     }

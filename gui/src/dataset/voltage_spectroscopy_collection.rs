@@ -18,6 +18,10 @@ pub enum Message {
     SetColorCol(&'static str),
 }
 
+pub enum Action {
+    None,
+}
+
 impl State {
     pub fn new(df: pl::DataFrame) -> Self {
         let df = photodiode_fit(&df);
@@ -31,7 +35,7 @@ impl State {
         Self { df, color_col: "" }
     }
 
-    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+    pub fn update(&mut self, message: Message) -> Action {
         todo!()
     }
 

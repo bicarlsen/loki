@@ -2,7 +2,6 @@
 use super::dataset;
 use crate::icon;
 use jpk_reader as jpk;
-use polars::prelude as pl;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -151,14 +150,14 @@ impl Workspace {
         match message {
             Message::PromptOpenDatasetFile => Action::Run(self.maybe_open_dataset_file()),
             Message::PromptOpenDatasetDir => Action::Run(self.maybe_open_dataset_dir()),
-            Message::LoadDatasetDirPathSelected(path) => Action::LoadDatasetFile(path),
+            Message::LoadDatasetFilePathSelected(path) => Action::LoadDatasetFile(path),
             Message::LoadDatasetDirPathSelected(path) => Action::LoadDatasetDir(path),
             Message::DatasetLoading { path } => {
                 self.dataset_set_loading(path);
                 Action::None
             }
             Message::DatasetWindowOpened { path, window } => {
-                self.dataset_window_opened(path, window);
+                self.insert_dataset_window(path, window);
                 Action::None
             }
             Message::DatasetChildWindowOpened { path, window, kind } => {
@@ -288,9 +287,11 @@ impl Workspace {
                 .set_title("Open dataset file")
                 .pick_file(),
         )
-        .map(|path| match path {
+        .then(|path| match path {
             None => iced::Task::none(),
-            Some(fh) => Action::LoadDatasetFile(fh.path().to_path_buf()),
+            Some(fh) => iced::Task::done(Message::LoadDatasetFilePathSelected(
+                fh.path().to_path_buf(),
+            )),
         })
     }
 
@@ -300,8 +301,12 @@ impl Workspace {
                 .set_title("Open dataset folder")
                 .pick_folder(),
         )
-        .then(|path| path.map(|path| iced::Task::done(Message::DatasetDirPathSelected(path))))
-        .unwrap_or(iced::Task::none())
+        .then(|path| match path {
+            None => iced::Task::none(),
+            Some(fh) => {
+                iced::Task::done(Message::LoadDatasetDirPathSelected(fh.path().to_path_buf()))
+            }
+        })
     }
 
     pub fn dataset_set_loading(&mut self, path: PathBuf) {
@@ -324,26 +329,22 @@ impl Workspace {
     }
 
     pub fn dataset_loaded(&mut self, path: PathBuf, kind: jpk::dataset::DatasetType) {
-        let Some(dataset) = self
+        let dataset = self
             .datasets
             .iter_mut()
             .find(|dataset| dataset.path == path)
-        else {
-            todo!("dataset loaded, but doesn't exist");
-        };
+            .expect("dataset loaded, but doesn't exist");
 
         dataset.data = DatasetState::Ok;
         let _ = dataset.kind.insert(kind);
     }
 
     fn insert_dataset_window(&mut self, path: PathBuf, window: iced::window::Id) {
-        let Some(dataset) = self
+        let dataset = self
             .datasets
             .iter_mut()
             .find(|dataset| dataset.path == path)
-        else {
-            todo!("dataset loaded, but doesn't exist");
-        };
+            .expect("dataset loaded, but doesn't exist");
 
         let _ = dataset.window.insert(window);
     }

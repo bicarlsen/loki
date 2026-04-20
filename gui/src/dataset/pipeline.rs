@@ -11,11 +11,9 @@ use std::{
 
 #[derive(Clone, Debug)]
 pub enum Message {
-    TransformPushed(Transform),
     PromptTransformScript,
     PushTransformScript(PathBuf),
     TransformOutputUpdated(TransformId),
-    OutputUpdated,
     IpcDataframeRequest {
         transform: TransformId,
         tx: crate::data_server::DataRequestTx,
@@ -26,8 +24,10 @@ pub enum Message {
     },
 }
 
+#[derive(derive_more::From)]
 pub enum Action {
     None,
+    Run(iced::Task<Message>),
 }
 
 pub type TransformId = u8;
@@ -126,33 +126,6 @@ impl Pipeline {
 }
 
 impl Pipeline {
-    pub(super) fn update(&mut self, message: Message) -> iced::Task<Message> {
-        match message {
-            Message::TransformPushed(_) => iced::Task::none(),
-            Message::PromptTransformScript => self.prompt_new_transform_script(),
-            Message::PushTransformScript(path) => {
-                let id = self.push(TransformKind::Script {
-                    file: path,
-                    runner: TransformScriptRunner {
-                        cmd: "python".to_string(),
-                    },
-                });
-
-                let transform = self.get_transform(id).unwrap();
-                iced::Task::done(Message::TransformPushed(transform.clone()))
-            }
-            Message::TransformOutputUpdated(transform) => self.transform_output_updated(transform),
-            Message::OutputUpdated => iced::Task::none(),
-            Message::IpcDataframeRequest { transform, tx } => {
-                self.ipc_dataframe_request(transform, tx)
-            }
-            Message::IpcDataframeProdcued {
-                transform,
-                dataframe,
-            } => self.ipc_dataframe_produced(transform, dataframe),
-        }
-    }
-
     pub(super) fn view(&self, dataset: impl AsRef<Path>) -> iced::Element<'_, Message> {
         let btn_ctrl_add_script = widget::button("Script").on_press(Message::PromptTransformScript);
         let controls_r1 = widget::row![btn_ctrl_add_script];
@@ -179,16 +152,45 @@ impl Pipeline {
 }
 
 impl Pipeline {
-    fn prompt_new_transform_script(&mut self) -> iced::Task<Message> {
-        rfd::FileDialog::new()
-            .set_title("Select script file")
-            .add_filter("Python", &["py"])
-            .pick_file()
-            .map(|path| iced::Task::done(Message::PushTransformScript(path)))
-            .unwrap_or(iced::Task::none())
+    pub(super) fn update(&mut self, message: Message) -> Action {
+        match message {
+            Message::PromptTransformScript => self.prompt_new_transform_script(),
+            Message::PushTransformScript(path) => {
+                self.push(TransformKind::Script {
+                    file: path,
+                    runner: TransformScriptRunner {
+                        cmd: "python".to_string(),
+                    },
+                });
+
+                Action::None
+            }
+            Message::TransformOutputUpdated(transform) => self.transform_output_updated(transform),
+            Message::IpcDataframeRequest { transform, tx } => {
+                self.ipc_dataframe_request(transform, tx)
+            }
+            Message::IpcDataframeProdcued {
+                transform,
+                dataframe,
+            } => self.ipc_dataframe_produced(transform, dataframe),
+        }
     }
 
-    fn transform_output_updated(&mut self, transform: TransformId) -> iced::Task<Message> {
+    fn prompt_new_transform_script(&mut self) -> Action {
+        iced::Task::future(
+            rfd::AsyncFileDialog::new()
+                .set_title("Select script file")
+                .add_filter("Python", &["py"])
+                .pick_file(),
+        )
+        .then(|path| match path {
+            Some(fh) => iced::Task::done(Message::PushTransformScript(fh.path().to_path_buf())),
+            None => iced::Task::none(),
+        })
+        .into()
+    }
+
+    fn transform_output_updated(&mut self, transform: TransformId) -> Action {
         let transform_idx = self
             .transforms
             .iter()
@@ -202,23 +204,22 @@ impl Pipeline {
                 .expect("dataframe should be cached")
                 .clone();
 
-            return iced::Task::done(Message::OutputUpdated);
+            return Action::None;
         }
 
         let next = &self.transforms[next_idx];
-        todo!("recompute");
-        iced::Task::done(Message::TransformOutputUpdated(next.id))
+        todo!("recompute dependents");
     }
 
     fn ipc_dataframe_request(
         &mut self,
         transform: TransformId,
         tx: crate::data_server::DataRequestTx,
-    ) -> iced::Task<Message> {
+    ) -> Action {
         let mut tx = tx.lock().expect("could not get ipc response channel");
         let tx = tx.take().expect("ipc response channel already taken");
 
-        // TODO: Get dataframe from transofrm instead of current output.
+        // TODO: Get dataframe from transform instead of current output.
         // let transform = self.get_transform(transform).unwrap();
 
         let mut ipc_file = match tempfile::NamedTempFile::new() {
@@ -229,7 +230,7 @@ impl Pipeline {
 
                 tx.send(Err(err.into()))
                     .expect("could not send ipc response");
-                return iced::Task::none();
+                return Action::None;
             }
         };
         let mut writer = pl::IpcWriter::new(ipc_file.as_file_mut());
@@ -239,19 +240,19 @@ impl Pipeline {
 
             tx.send(Err(err.into()))
                 .expect("could not send ipc response");
-            return iced::Task::none();
+            return Action::None;
         }
 
         tx.send(Ok(ipc_file)).expect("could not send ipc response");
-        iced::Task::none()
+        Action::None
     }
 
     fn ipc_dataframe_produced(
         &mut self,
         transform: TransformId,
         dataframe: pl::DataFrame,
-    ) -> iced::Task<Message> {
+    ) -> Action {
         self.cache.insert(transform, dataframe);
-        iced::Task::done(Message::TransformOutputUpdated(transform))
+        self.transform_output_updated(transform)
     }
 }

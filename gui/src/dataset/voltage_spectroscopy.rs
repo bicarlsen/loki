@@ -1,6 +1,6 @@
 //! Element for a single voltage spectroscopy dataset (`.jpk-voltage-ramp`).
 use super::plot::scatter;
-use polars::prelude::{self as pl, *};
+use polars::prelude as pl;
 
 const DEFAULT_X_COL: &str = "cafmBias";
 const DEFAULT_Y_COL: &str = "cafmCurrent";
@@ -9,6 +9,10 @@ pub struct State {
     df: pl::DataFrame,
     x_col: &'static str,
     y_col: &'static str,
+}
+
+pub enum Action {
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +30,7 @@ impl State {
         }
     }
 
-    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+    pub fn update(&mut self, message: Message) -> Action {
         todo!()
     }
 

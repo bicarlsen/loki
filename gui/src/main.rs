@@ -1,6 +1,5 @@
 //! JPK reader GUI.
-
-use iced::{Task, advanced::graphics::core::window};
+use iced::advanced::graphics::core::window;
 use jpk_reader as jpk;
 use polars::prelude as pl;
 use std::{
@@ -141,6 +140,7 @@ impl App {
 }
 
 impl App {
+    #[must_use]
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         #[cfg(feature = "tracing")]
         ::tracing::trace!(message=?message);
@@ -175,63 +175,27 @@ impl App {
     }
 
     fn dataset_message(&mut self, id: PathBuf, message: dataset::Message) -> iced::Task<Message> {
-        self.datasets
-            .get_mut(&id)
-            .map(|dataset| match message {
-                dataset::Message::WindowOpened(window_id) => {
-                    let _ = self
-                        .windows
-                        .insert(window_id.clone(), WindowKind::Dataset(id.clone()));
-                    iced::Task::none()
-                }
-                dataset::Message::ChildWindowOpened { window, kind } => {
-                    let _ = self.windows.insert(
-                        window.clone(),
-                        WindowKind::DatasetChild {
-                            dataset: dataset.path().clone(),
-                            kind,
-                        },
-                    );
+        let dataset = self.datasets.get_mut(&id).expect("dataset should exist");
+        match dataset.update(message) {
+            dataset::Action::None => iced::Task::none(),
+            dataset::Action::Run(task) => task.map(move |message| Message::Dataset {
+                id: id.clone(),
+                message,
+            }),
+            dataset::Action::ChildWindowOpened { window, kind } => {
+                let path = dataset.path().clone();
+                let action = self
+                    .workspace
+                    .update(workspace::Message::DatasetChildWindowOpened {
+                        path,
+                        window: window,
+                        kind: kind.clone(),
+                    });
+                assert!(matches!(action, workspace::Action::None));
 
-                    iced::Task::done(
-                        workspace::Message::DatasetChildWindowOpened {
-                            path: id.clone(),
-                            window,
-                            kind,
-                        }
-                        .into(),
-                    )
-                }
-                dataset::Message::Pipeline(dataset::pipeline::Message::TransformPushed(
-                    ref transform,
-                )) => {
-                    if let dataset::pipeline::TransformKind::Script { file, .. } = transform.kind()
-                    {
-                        if let Some(data_server) = &self.data_server {
-                            data_server
-                                .update_tx
-                                .send(data_server::Update::TransformAdded(
-                                    data_server::TransformUri::new(id.clone(), transform.id()),
-                                ))
-                                .expect("could not send update");
-                        }
-                    }
-
-                    dataset
-                        .update(message)
-                        .map(move |message| Message::Dataset {
-                            id: id.clone(),
-                            message,
-                        })
-                }
-                _ => dataset
-                    .update(message)
-                    .map(move |message| Message::Dataset {
-                        id: id.clone(),
-                        message,
-                    }),
-            })
-            .expect("dataset should exist")
+                iced::Task::none()
+            }
+        }
     }
 
     fn data_server(&mut self, message: data_server::Message) -> iced::Task<Message> {
@@ -281,19 +245,25 @@ impl App {
         iced::Task::none()
     }
 
+    /// # Notes
+    /// Focuses the window.
     fn window_opened(&mut self, id: iced::window::Id, kind: WindowKind) -> iced::Task<Message> {
-        let focus = iced::window::gain_focus(id);
+        let focus = iced::window::gain_focus(id.clone());
         let task = match &kind {
             WindowKind::Workspace => focus,
             WindowKind::Dataset(path) => {
+                let _ = self
+                    .windows
+                    .insert(id.clone(), WindowKind::Dataset(path.clone()));
+
                 let action = self
                     .workspace
                     .update(workspace::Message::DatasetWindowOpened {
                         path: path.clone(),
                         window: id.clone(),
                     });
-
                 assert!(matches!(action, workspace::Action::None));
+
                 iced::Task::none()
             }
             WindowKind::DatasetChild { dataset, kind } => {
@@ -320,7 +290,7 @@ impl App {
 
         let window = self.windows.remove(&id).expect("window should exist");
         match window {
-            WindowKind::Workspace => {}
+            WindowKind::Workspace => iced::Task::none(),
             WindowKind::Dataset(path) => {
                 let last_dataset_window = !self.windows.values().any(|window| {
                     if let WindowKind::DatasetChild { dataset, .. } = window {
@@ -416,14 +386,29 @@ impl App {
         }
     }
 
+    #[inline]
     fn try_load_dataset_file(&mut self, path: impl Into<PathBuf>) -> iced::Task<Message> {
+        self.try_load_dataset(path, Self::load_dataset_file)
+    }
+
+    #[inline]
+    fn try_load_dataset_dir(&mut self, path: impl Into<PathBuf>) -> iced::Task<Message> {
+        self.try_load_dataset(path, Self::load_dataset_dir)
+    }
+
+    fn try_load_dataset<L>(&mut self, path: impl Into<PathBuf>, loader: L) -> iced::Task<Message>
+    where
+        L: FnOnce(PathBuf) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset>
+            + Send
+            + 'static,
+    {
         let path = path.into();
         self.workspace.dataset_set_loading(path.clone());
 
         iced::Task::perform(
             tokio::task::spawn_blocking({
                 let path = path.clone();
-                move || Self::load_dataset_file(&path)
+                move || loader(path)
             }),
             move |result| match result {
                 Ok(dataset) => match dataset {
@@ -434,7 +419,7 @@ impl App {
                     },
                     Err(err) => {
                         #[cfg(feature = "tracing")]
-                        ::tracing::error!("tokio task failed while loading dataset file: {err:?}");
+                        ::tracing::error!("tokio task failed while loading dataset: {err:?}");
 
                         Message::DatasetLoadError {
                             path: path.clone(),
@@ -444,7 +429,7 @@ impl App {
                 },
                 Err(err) => {
                     #[cfg(feature = "tracing")]
-                    ::tracing::error!("tokio task failed while loading dataset file: {err}");
+                    ::tracing::error!("tokio task failed while loading dataset: {err}");
 
                     Message::DatasetLoadError {
                         path: path.clone(),
@@ -473,6 +458,48 @@ impl App {
                 panic!("file should not be identified as a dataset collection type")
             }
         }
+    }
+
+    fn load_dataset_dir(
+        path: impl AsRef<Path>,
+    ) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset> {
+        let Some(dataset_type) = jpk::dataset::DatasetType::from_fs(&path)? else {
+            return Err(error::OpenDataset::UnknownDatasetType);
+        };
+
+        match dataset_type {
+            jpk_reader::dataset::DatasetType::VoltageSpectroscopyCollection => {
+                let reader = jpk::voltage_spectroscopy::v2_0::DirReader::new(path.as_ref());
+                let df = reader.load_data_all()?;
+                Ok((reader.into(), df))
+            }
+            jpk_reader::dataset::DatasetType::VoltageSpectroscopy
+            | jpk_reader::dataset::DatasetType::QIMap => {
+                panic!("directory should not be identified as single dataset type")
+            }
+        }
+    }
+
+    fn open_dataset(
+        &mut self,
+        path: impl Into<PathBuf>,
+        reader: dataset::Reader,
+        df: pl::DataFrame,
+    ) -> iced::Task<Message> {
+        let path = path.into();
+        let (dataset, open) = dataset::Dataset::new(path.clone(), reader, df);
+        self.workspace.dataset_loaded(path.clone(), dataset.kind());
+        self.datasets.insert(path.clone(), dataset);
+
+        open.then(move |window| {
+            iced::Task::done(
+                Message::WindowOpened {
+                    window,
+                    kind: WindowKind::Dataset(path.clone()),
+                }
+                .into(),
+            )
+        })
     }
 
     // fn open_dataset_file_path(&mut self, path: impl AsRef<Path>) -> iced::Task<Message> {
@@ -550,51 +577,6 @@ impl App {
     //         }
     //     })
     // }
-
-    fn try_load_dataset_dir(
-        path: impl AsRef<Path>,
-    ) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset> {
-        let Some(dataset_type) = jpk::dataset::DatasetType::from_fs(&path)? else {
-            return Err(error::OpenDataset::UnknownDatasetType);
-        };
-
-        match dataset_type {
-            jpk_reader::dataset::DatasetType::VoltageSpectroscopyCollection => {
-                let mut reader = jpk::voltage_spectroscopy::v2_0::DirReader::new(path.as_ref());
-                let df = reader.load_data_all()?;
-                Ok((reader.into(), df))
-            }
-            jpk_reader::dataset::DatasetType::VoltageSpectroscopy
-            | jpk_reader::dataset::DatasetType::QIMap => {
-                panic!("directory should not be identified as single dataset type")
-            }
-        }
-    }
-
-    fn open_dataset(
-        &mut self,
-        path: impl Into<PathBuf>,
-        reader: dataset::Reader,
-        df: pl::DataFrame,
-    ) -> iced::Task<Message> {
-        let path = path.into();
-        let (dataset, open) = dataset::Dataset::new(path.clone(), reader, df);
-        self.workspace.dataset_loaded(path.clone(), dataset.kind());
-        self.datasets.insert(path.clone(), dataset);
-
-        open.then(move |window| {
-            iced::Task::batch([
-                iced::window::gain_focus(window.clone()),
-                iced::Task::done(
-                    workspace::Message::DatasetWindowOpened {
-                        path: path.clone(),
-                        window,
-                    }
-                    .into(),
-                ),
-            ])
-        })
-    }
 }
 
 #[cfg(feature = "project")]

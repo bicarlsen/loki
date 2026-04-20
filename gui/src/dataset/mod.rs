@@ -60,6 +60,10 @@ pub enum Message {
 pub enum Action {
     None,
     Run(iced::Task<Message>),
+    ChildWindowOpened {
+        window: iced::window::Id,
+        kind: ChildWindowType,
+    },
 }
 
 #[derive(derive_more::Debug, derive_more::From)]
@@ -148,13 +152,14 @@ impl Dataset {
                 reader,
                 pipeline: pipeline::Pipeline::new(df),
                 state,
-                plot,
+                plot: plot,
                 children: Children::default(),
             },
             open,
         )
     }
 
+    #[must_use]
     pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::OpenSettings => {
@@ -162,17 +167,17 @@ impl Dataset {
                     Action::Run(iced::window::gain_focus(id.clone()))
                 } else {
                     let (_, open) = iced::window::open(iced::window::Settings::default());
-                    Action::run(open.map(Message::SettingsOpened))
+                    Action::Run(open.map(Message::SettingsOpened))
                 }
             }
             Message::SettingsOpened(id) => {
                 assert!(self.children.settings.is_none(), "settings already exist");
                 let settings = settings::Settings::new();
                 self.children.settings = Some((id.clone(), settings));
-                iced::Task::done(Message::ChildWindowOpened {
+                Action::ChildWindowOpened {
                     window: id.clone(),
                     kind: ChildWindowType::Settings,
-                })
+                }
             }
             Message::SettingsClosed => {
                 assert!(self.children.settings.is_some(), "settings should exist");
@@ -194,10 +199,10 @@ impl Dataset {
                 );
                 let data_table = data_table::DataTable::new(self.pipeline.output().clone());
                 self.children.data_table = Some((id.clone(), data_table));
-                iced::Task::done(Message::ChildWindowOpened {
+                Action::ChildWindowOpened {
                     window: id.clone(),
                     kind: ChildWindowType::DataTable,
-                })
+                }
             }
             Message::DataTableClosed => {
                 assert!(
@@ -209,7 +214,7 @@ impl Dataset {
             }
             Message::OpenPipeline => {
                 if let Some(id) = self.children.pipeline {
-                    Action::run(iced::window::gain_focus(id.clone()))
+                    Action::Run(iced::window::gain_focus(id.clone()))
                 } else {
                     let settings = iced::window::Settings {
                         size: iced::Size {
@@ -225,14 +230,17 @@ impl Dataset {
             Message::PipelineOpened(id) => {
                 assert!(self.children.pipeline.is_none(), "pipeline already exists");
                 self.children.pipeline = Some(id.clone());
-
-                iced::Task::batch([
-                    iced::Task::done(Message::WindowOpened(id.clone())),
-                    iced::Task::done(Message::ChildWindowOpened {
-                        window: id.clone(),
-                        kind: ChildWindowType::Pipeline,
-                    }),
-                ])
+                Action::ChildWindowOpened {
+                    window: id,
+                    kind: ChildWindowType::Pipeline,
+                }
+                // iced::Task::batch([
+                //     iced::Task::done(Message::WindowOpened(id.clone())),
+                //     iced::Task::done(Message::ChildWindowOpened {
+                //         window: id.clone(),
+                //         kind: ChildWindowType::Pipeline,
+                //     }),
+                // ])
             }
             Message::PipelineClosed => {
                 assert!(self.children.pipeline.is_some());
@@ -252,7 +260,7 @@ impl Dataset {
                 // let data_table_msg =
                 //     if let Some((_, data_table)) = self.children.data_table.as_mut() {
                 //         let data_table_msg = match &message {
-                // plot::Message::Data(plot::chart::Message::ShapeEnter { point, .. }) => {
+                // plot::Message::Data(figure::chart::Message::ShapeEnter { point, .. }) => {
                 //     let idx = self
                 //         .plot
                 //         .record_idx_by_point_id(point)
@@ -260,7 +268,7 @@ impl Dataset {
 
                 //     Some(data_table::Message::HighlightRecord(idx))
                 // }
-                // plot::Message::Data(plot::chart::Message::ShapeExit) => {
+                // plot::Message::Data(figure::chart::Message::ShapeExit) => {
                 //     Some(data_table::Message::ClearHighlight)
                 // }
                 //     _ => None,
@@ -276,10 +284,22 @@ impl Dataset {
 
                 // iced::Task::batch([data_table_msg, self.plot.update(message).map(Into::into)])
 
-                match message {
-                    plot::Message::DataframeChange(data_frame) => todo!(),
-                    plot::Message::SetMode(options) => todo!(),
-                    plot::Message::Mode(message) => todo!(),
+                match self.plot.update(message) {
+                    plot::Action::None => Action::None,
+                    plot::Action::DataHovered(idx) => {
+                        if let Some((_, data_table)) = self.children.data_table.as_mut() {
+                            let message = if let Some(idx) = idx {
+                                data_table::Message::HighlightRecord(idx)
+                            } else {
+                                data_table::Message::ClearHighlight
+                            };
+                            match data_table.update(message) {
+                                data_table::Action::None => Action::None,
+                            }
+                        } else {
+                            Action::None
+                        }
+                    }
                 }
             }
             Message::Settings(message) => {
@@ -289,16 +309,20 @@ impl Dataset {
                 }
 
                 if let Some((_, settings)) = self.children.settings.as_mut() {
-                    settings.update(message).map(Message::Settings)
+                    match settings.update(message) {
+                        settings::Action::None => Action::None,
+                    }
                 } else {
-                    iced::Task::none()
+                    Action::None
                 }
             }
             Message::DataTable(message) => {
                 if let Some((_, data_table)) = self.children.data_table.as_mut() {
-                    data_table.update(message).map(Message::DataTable)
+                    match data_table.update(message) {
+                        data_table::Action::None => Action::None,
+                    }
                 } else {
-                    iced::Task::none()
+                    Action::None
                 }
             }
             Message::Pipeline(message) => self.pipeline_update(message),
@@ -307,14 +331,18 @@ impl Dataset {
                     panic!("invalid message state")
                 };
 
-                state.update(message).map(Into::into)
+                match state.update(message) {
+                    voltage_spectroscopy::Action::None => Action::None,
+                }
             }
             Message::VoltageSpectroscopyCollection(message) => {
                 let DatasetKind::VoltageSpectroscopyCollection(state) = &mut self.state else {
                     panic!("invalid message state")
                 };
 
-                state.update(message).map(Into::into)
+                match state.update(message) {
+                    voltage_spectroscopy_collection::Action::None => Action::None,
+                }
             }
         }
     }
@@ -330,16 +358,16 @@ impl Dataset {
             let btn_settings = widget::button(icon::cog()).on_press(Message::OpenSettings);
             let btn_open_data_table = widget::button("Data table").on_press(Message::OpenDataTable);
             let btn_pipeline = widget::button("Pipeline").on_press(Message::OpenPipeline);
-            let btn_file_browser = self
-                .state
-                .is_file_collection()
-                .then_some(widget::button("Files browser").on_press(Message::OpenFilesBrowser));
+            // let btn_file_browser = self
+            //     .state
+            //     .is_file_collection()
+            //     .then_some(widget::button("Files browser").on_press(Message::OpenFilesBrowser));
 
             let controls = widget::column![
                 btn_settings,
                 btn_open_data_table,
                 btn_pipeline,
-                btn_file_browser,
+                // btn_file_browser,
             ];
             let controls_container = widget::container(controls);
             return widget::row![plot_container, controls_container].into();
@@ -370,18 +398,22 @@ impl Dataset {
 }
 
 impl Dataset {
-    fn pipeline_update(&mut self, message: pipeline::Message) -> iced::Task<Message> {
-        match message {
-            pipeline::Message::OutputUpdated => iced::Task::batch([
-                self.pipeline.update(message).map(Message::Pipeline),
-                iced::Task::done(
-                    data_table::Message::DataframeUpdated(self.pipeline.output().clone()).into(),
-                ),
-                iced::Task::done(
-                    plot::Message::DataframeChange(self.pipeline.output().clone()).into(),
-                ),
-            ]),
-            _ => self.pipeline.update(message).map(Message::Pipeline),
+    fn pipeline_update(&mut self, message: pipeline::Message) -> Action {
+        // match message {
+        //     pipeline::Message::OutputUpdated => iced::Task::batch([
+        //         self.pipeline.update(message).map(Message::Pipeline),
+        //         iced::Task::done(
+        //             data_table::Message::DataframeUpdated(self.pipeline.output().clone()).into(),
+        //         ),
+        //         iced::Task::done(
+        //             plot::Message::DataframeChange(self.pipeline.output().clone()).into(),
+        //         ),
+        //     ]),
+        //     _ => self.pipeline.update(message).map(Message::Pipeline),
+        // }
+        match self.pipeline.update(message) {
+            pipeline::Action::None => Action::None,
+            pipeline::Action::Run(task) => Action::Run(task.map(Message::Pipeline)),
         }
     }
 }
@@ -392,6 +424,10 @@ mod settings {
     #[derive(Debug, Clone)]
     pub enum Message {
         SetMode(plot::mode::Kind),
+    }
+
+    pub enum Action {
+        None,
     }
 
     #[derive(Default)]
@@ -406,11 +442,11 @@ mod settings {
             Default::default()
         }
 
-        pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+        pub fn update(&mut self, message: Message) -> Action {
             match message {
                 Message::SetMode(mode) => {
                     self.mode = mode;
-                    iced::Task::none()
+                    Action::None
                 }
             }
         }
@@ -446,6 +482,10 @@ mod data_table {
         ClearHighlight,
     }
 
+    pub enum Action {
+        None,
+    }
+
     pub struct DataTable {
         df: pl::DataFrame,
         highlight: Option<usize>,
@@ -459,19 +499,19 @@ mod data_table {
             }
         }
 
-        pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+        pub fn update(&mut self, message: Message) -> Action {
             match message {
                 Message::DataframeUpdated(dataframe) => {
                     self.df = dataframe;
-                    iced::Task::none()
+                    Action::None
                 }
                 Message::HighlightRecord(idx) => {
                     let _ = self.highlight.insert(idx);
-                    iced::Task::none()
+                    Action::None
                 }
                 Message::ClearHighlight => {
                     let _ = self.highlight.take();
-                    iced::Task::none()
+                    Action::None
                 }
             }
         }
