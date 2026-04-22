@@ -63,7 +63,16 @@ impl State {
                         scatter::Action::DataHovered(idx) => Action::DataHovered(idx),
                     }
                 }
-                mode::Message::Heatmap(message) => todo!(),
+                mode::Message::Heatmap(message) => {
+                    let mode::Mode::Heatmap(state) = &mut self.mode else {
+                        panic!("invalid message for state");
+                    };
+
+                    match state.update(message) {
+                        heatmap::Action::None => Action::None,
+                        heatmap::Action::DataHovered(idx) => Action::DataHovered(idx),
+                    }
+                }
             },
         }
     }

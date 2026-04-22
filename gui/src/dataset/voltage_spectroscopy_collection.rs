@@ -4,6 +4,7 @@ use polars::prelude::{self as pl, *};
 
 const DEFAULT_X_COL: &str = "x";
 const DEFAULT_Y_COL: &str = "y";
+const DEFAULT_Z_COL: &str = "y";
 const DEFAULT_SEGMENT_COL: &str = "segment";
 const DEFAULT_COLOR_COL: &str = "ff_rel";
 // TODO: expected columns, with validation
@@ -44,7 +45,17 @@ impl State {
     }
 
     pub fn default_options() -> heatmap::Options {
-        todo!()
+        let x = heatmap::axis::Axis::new(super::plot::axis::IndexValues::Series(
+            DEFAULT_X_COL.to_string(),
+        ));
+        let y = heatmap::axis::Axis::new(super::plot::axis::IndexValues::Series(
+            DEFAULT_Y_COL.to_string(),
+        ));
+        let z = heatmap::axis::Axis::new(super::plot::axis::IndexValues::Series(
+            DEFAULT_Z_COL.to_string(),
+        ));
+
+        heatmap::Options::new(heatmap::Index::new(x, y, z))
     }
 }
 

@@ -251,7 +251,6 @@ mod data {
     use super::{axis, trace};
     use iced_aksel::{self as aksel, interaction::IntoArea};
     use palette::ShiftHue;
-    use polars::prelude as pl;
 
     #[derive(Debug, Clone)]
     pub enum PlotInteraction {
@@ -435,7 +434,7 @@ mod data {
             let num_traces = axis.traces().len();
             assert_ne!(num_traces, 0, "axis traces must not be empty");
 
-            let df = self.df.read().expect("dataframe shoudl be readable");
+            let df = self.df.read().expect("dataframe should be readable");
             let base_color_lch = utils::color_to_lch(base_color);
             let trace_color_shift = 180.0 / num_traces as f32;
             for (idx, trace) in axis.traces().iter().enumerate() {
