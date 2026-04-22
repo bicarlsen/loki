@@ -28,6 +28,8 @@ pub enum Message {
 pub enum Action {
     None,
     Run(iced::Task<Message>),
+    RegisterTransformScript(TransformId),
+    UpdateDataframe(pl::DataFrame),
 }
 
 pub type TransformId = u8;
@@ -116,6 +118,20 @@ impl Pipeline {
     fn get_transform(&self, id: TransformId) -> Option<&Transform> {
         self.transforms.iter().find(|transform| transform.id == id)
     }
+
+    /// Get the index (position) of the transform.
+    /// Transforms are 0 indexed.
+    fn transform_position(&self, id: TransformId) -> Option<usize> {
+        self.transforms
+            .iter()
+            .position(|transform| transform.id == id)
+    }
+
+    /// # Returns
+    /// `true` if the transform is the last on the stack.
+    fn transform_is_last(&self, id: TransformId) -> Option<bool> {
+        self.transforms.last().map(|transform| transform.id == id)
+    }
 }
 
 impl Pipeline {
@@ -149,14 +165,14 @@ impl Pipeline {
         match message {
             Message::PromptTransformScript => self.prompt_new_transform_script(),
             Message::PushTransformScript(path) => {
-                self.push(TransformKind::Script {
+                let id = self.push(TransformKind::Script {
                     file: path,
                     runner: TransformScriptRunner {
                         cmd: "python".to_string(),
                     },
                 });
 
-                Action::None
+                Action::RegisterTransformScript(id)
             }
             Message::TransformOutputUpdated(transform) => self.transform_output_updated(transform),
             Message::IpcDataframeRequest { transform, tx } => {
@@ -184,23 +200,17 @@ impl Pipeline {
     }
 
     fn transform_output_updated(&mut self, transform: TransformId) -> Action {
-        let transform_idx = self
-            .transforms
-            .iter()
-            .position(|t| t.id == transform)
-            .expect("invalid transorm id");
-        let next_idx = transform_idx + 1;
-        if next_idx == self.transforms.len() {
-            self.output = self
+        if self
+            .transform_is_last(transform)
+            .expect("transform should exist")
+        {
+            let df = self
                 .cache
                 .get(&transform)
-                .expect("dataframe should be cached")
-                .clone();
-
-            return Action::None;
+                .expect("latest dataframe should be cached");
+            return Action::UpdateDataframe(df.clone());
         }
 
-        let next = &self.transforms[next_idx];
         todo!("recompute dependents");
     }
 
@@ -211,10 +221,6 @@ impl Pipeline {
     ) -> Action {
         let mut tx = tx.lock().expect("could not get ipc response channel");
         let tx = tx.take().expect("ipc response channel already taken");
-
-        // TODO: Get dataframe from transform instead of current output.
-        // let transform = self.get_transform(transform).unwrap();
-
         let mut ipc_file = match tempfile::NamedTempFile::new() {
             Ok(file) => file,
             Err(err) => {
@@ -227,7 +233,19 @@ impl Pipeline {
             }
         };
         let mut writer = pl::IpcWriter::new(ipc_file.as_file_mut());
-        if let Err(err) = writer.finish(&mut self.output) {
+
+        let idx = self
+            .transform_position(transform)
+            .expect("transform should exist");
+        let df = if idx == 0 {
+            &mut self.raw
+        } else if let Some(df) = self.cache.get_mut(&transform) {
+            df
+        } else {
+            todo!("recalculate dataframe")
+        };
+
+        if let Err(err) = writer.finish(df) {
             #[cfg(feature = "tracing")]
             tracing::error!("could not write dataframe to ipc file: {err:?}");
 

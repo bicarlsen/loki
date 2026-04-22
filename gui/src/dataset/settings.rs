@@ -1,4 +1,3 @@
-
 use super::plot;
 
 #[derive(Debug, Clone)]
@@ -10,7 +9,7 @@ pub enum Action {
     None,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
 pub struct Settings {
     /// Plot mode.

@@ -66,6 +66,10 @@ pub enum Action {
         window: iced::window::Id,
         kind: ChildWindowType,
     },
+    RegisterTransformScript {
+        dataset: PathBuf,
+        transform: pipeline::TransformId,
+    },
 }
 
 #[derive(derive_more::Debug, derive_more::From)]
@@ -80,7 +84,7 @@ enum DatasetKind {
     VoltageSpectroscopyCollection(voltage_spectroscopy_collection::State),
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Children {
     pub(crate) settings: Option<(iced::window::Id, settings::Settings)>,
     pub(crate) data_table: Option<(iced::window::Id, data_table::DataTable)>,
@@ -323,7 +327,6 @@ impl Dataset {
     pub fn view(
         &self,
         theme: &iced::advanced::graphics::core::Theme,
-
         window: &iced::window::Id,
     ) -> iced::Element<'_, Message> {
         if self.window_id == *window {
@@ -372,21 +375,23 @@ impl Dataset {
 
 impl Dataset {
     fn pipeline_update(&mut self, message: pipeline::Message) -> Action {
-        // match message {
-        //     pipeline::Message::OutputUpdated => iced::Task::batch([
-        //         self.pipeline.update(message).map(Message::Pipeline),
-        //         iced::Task::done(
-        //             data_table::Message::DataframeUpdated(self.pipeline.output().clone()).into(),
-        //         ),
-        //         iced::Task::done(
-        //             plot::Message::DataframeChange(self.pipeline.output().clone()).into(),
-        //         ),
-        //     ]),
-        //     _ => self.pipeline.update(message).map(Message::Pipeline),
-        // }
         match self.pipeline.update(message) {
             pipeline::Action::None => Action::None,
             pipeline::Action::Run(task) => Action::Run(task.map(Message::Pipeline)),
+            pipeline::Action::RegisterTransformScript(transform) => {
+                Action::RegisterTransformScript {
+                    dataset: self.path.clone(),
+                    transform,
+                }
+            }
+            pipeline::Action::UpdateDataframe(df) => {
+                let mut curr = self
+                    .df
+                    .write()
+                    .expect("could not acquire lock for dataframe");
+                *curr = df;
+                Action::None
+            }
         }
     }
 }

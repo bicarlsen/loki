@@ -64,7 +64,7 @@ enum Message {
     AppClosed,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum WindowKind {
     Workspace,
     Dataset(PathBuf),
@@ -74,18 +74,12 @@ enum WindowKind {
     },
 }
 
-#[derive(Debug)]
-struct DataServer {
-    update_tx: tokio::sync::mpsc::UnboundedSender<data_server::Update>,
-    kill: tokio::sync::oneshot::Sender<data_server::Kill>,
-}
-
 struct App {
     theme: iced::Theme,
     workspace: workspace::Workspace,
     datasets: HashMap<PathBuf, dataset::Dataset>,
     windows: HashMap<iced::window::Id, WindowKind>,
-    data_server: Option<DataServer>,
+    data_server: Option<data_server::DataServer>,
 }
 
 impl App {
@@ -115,10 +109,15 @@ impl App {
     }
 
     pub fn view(&self, window: window::Id) -> iced::Element<'_, Message> {
-        match self.windows.get(&window) {
-            Some(WindowKind::Workspace) => self.workspace.view().map(Message::Workspace),
-            Some(WindowKind::Dataset(path))
-            | Some(WindowKind::DatasetChild { dataset: path, .. }) => {
+        let Some(kind) = self.windows.get(&window) else {
+            #[cfg(feature = "tracing")]
+            ::tracing::debug!("window {window} does not exist");
+
+            return iced::widget::space().into();
+        };
+        match kind {
+            WindowKind::Workspace => self.workspace.view().map(Message::Workspace),
+            WindowKind::Dataset(path) | WindowKind::DatasetChild { dataset: path, .. } => {
                 let dataset = self.datasets.get(path).expect("dataset should exist");
                 dataset
                     .view(&self.theme, &window)
@@ -127,7 +126,6 @@ impl App {
                         message: msg,
                     })
             }
-            None => iced::widget::container(iced::widget::Space::new()).into(),
         }
     }
 
@@ -184,6 +182,13 @@ impl App {
             }),
             dataset::Action::ChildWindowOpened { window, kind } => {
                 let path = dataset.path().clone();
+                self.windows.insert(
+                    window,
+                    WindowKind::DatasetChild {
+                        dataset: path.clone(),
+                        kind,
+                    },
+                );
                 let action = self
                     .workspace
                     .update(workspace::Message::DatasetChildWindowOpened {
@@ -192,6 +197,17 @@ impl App {
                         kind: kind.clone(),
                     });
                 assert!(matches!(action, workspace::Action::None));
+
+                iced::Task::none()
+            }
+            dataset::Action::RegisterTransformScript { dataset, transform } => {
+                if let Some(server) = &self.data_server {
+                    server
+                        .update(data_server::Update::TransformAdded(
+                            data_server::TransformUri { dataset, transform },
+                        ))
+                        .expect("could not send update to data server");
+                }
 
                 iced::Task::none()
             }
@@ -237,8 +253,7 @@ impl App {
     fn data_server_update(&mut self, update: data_server::Update) -> iced::Task<Message> {
         if let Some(data_server) = &mut self.data_server {
             data_server
-                .update_tx
-                .send(update)
+                .update(update)
                 .expect("could not send data server update");
         }
 
@@ -248,6 +263,7 @@ impl App {
     /// # Notes
     /// Focuses the window.
     fn window_opened(&mut self, id: iced::window::Id, kind: WindowKind) -> iced::Task<Message> {
+        self.windows.insert(id, kind.clone());
         let focus = iced::window::gain_focus(id.clone());
         let task = match &kind {
             WindowKind::Workspace => focus,
@@ -279,7 +295,6 @@ impl App {
                 iced::Task::none()
             }
         };
-        self.windows.insert(id, kind);
         task
     }
 

@@ -71,7 +71,7 @@ pub struct Kill;
 #[derive(Clone, derive_more::Debug)]
 pub enum Message {
     #[debug("ServerStarted")]
-    ServerStarted(Arc<Mutex<Option<super::DataServer>>>),
+    ServerStarted(Arc<Mutex<Option<DataServer>>>),
     DataRequest {
         transform: TransformUri,
         /// Channel to send the IPC file.
@@ -89,6 +89,21 @@ pub enum Update {
     TransformRemoved(TransformUri),
 }
 
+#[derive(Debug)]
+pub struct DataServer {
+    update_tx: tokio::sync::mpsc::UnboundedSender<Update>,
+    kill: tokio::sync::oneshot::Sender<Kill>,
+}
+
+impl DataServer {
+    pub fn update(
+        &self,
+        update: Update,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<Update>> {
+        self.update_tx.send(update)
+    }
+}
+
 pub fn start() -> impl iced::task::Straw<Kill, Message, std::io::Error> {
     let (update_tx, update_rx) = mpsc::unbounded_channel::<Update>();
     let (kill_tx, kill_rx) = oneshot::channel::<Kill>();
@@ -98,7 +113,7 @@ pub fn start() -> impl iced::task::Straw<Kill, Message, std::io::Error> {
         server
             .message_tx
             .send(Message::ServerStarted(Arc::new(Mutex::new(Some(
-                super::DataServer {
+                DataServer {
                     update_tx,
                     kill: kill_tx,
                 },
@@ -203,7 +218,7 @@ impl Server {
     async fn handle_ipc_dataframe_request(&mut self, stream: &mut net::TcpStream, key: &String) {
         let Some(transform_uri) = self.transform_map.get(key) else {
             #[cfg(feature = "tracing")]
-            tracing::error!("transform uri key not found {key}");
+            tracing::error!("transform uri key `{key}` not found");
 
             return;
         };
@@ -253,7 +268,7 @@ impl Server {
     ) {
         let Some(transform_uri) = self.transform_map.get(key) else {
             #[cfg(feature = "tracing")]
-            tracing::debug!("transform uri key not found: {key}");
+            tracing::debug!("transform uri key `{key}` not found");
 
             return;
         };

@@ -14,6 +14,7 @@ pub enum Action {
     None,
 }
 
+#[derive(Debug)]
 pub struct DataTable {
     df: SharedDataframe,
     highlight: Option<usize>,
@@ -44,38 +45,49 @@ impl DataTable {
         &self,
         theme: &iced::advanced::graphics::core::Theme,
     ) -> iced::Element<'_, Message> {
-        let df = self.df.read().expect("dataframe should be readable");
         // TODO: Headers should be sticky
-        // TODO: Columns fit to data instead of header title causing overflow
-        let columns = df.schema().iter().map(|(name, _dtype)| {
-            widget::table::column(name.as_str(), |idx: usize| {
-                let col = df.column(name.as_str()).unwrap();
-                let mut text = match col.get(idx).unwrap() {
-                    pl::AnyValue::Null => widget::text(""),
-                    pl::AnyValue::Boolean(value) => {
-                        if value {
-                            widget::text("true")
-                        } else {
-                            widget::text("false")
+        let df_guard = self.df.read().expect("dataframe should be readable");
+        let df = (*df_guard).clone();
+        let highlight = self.highlight;
+        let height = df.height();
+        let columns_data: Vec<(String, pl::Column)> = df
+            .schema()
+            .iter()
+            .map(|(name, _)| (name.to_string(), df.column(name).unwrap().clone()))
+            .collect();
+        drop(df);
+
+        let columns: Vec<_> = columns_data
+            .into_iter()
+            .map(|(name, col)| {
+                widget::table::column(widget::text(name.clone()), move |idx: usize| {
+                    let mut text = match col.get(idx).unwrap() {
+                        pl::AnyValue::Null => widget::text(""),
+                        pl::AnyValue::Boolean(value) => {
+                            if value {
+                                widget::text("true")
+                            } else {
+                                widget::text("false")
+                            }
+                        }
+                        pl::AnyValue::String(value) => widget::text(value.to_string()),
+                        pl::AnyValue::Float64(value) => widget::text(format!("{value:?}")),
+                        pl::AnyValue::UInt8(value) => widget::text(format!("{value:?}")),
+                        pl::AnyValue::Int64(value) => widget::text(format!("{value:?}")),
+                        pl::AnyValue::Int128(value) => widget::text(format!("{value:?}")),
+                        value => todo!("data table display {value:?}"),
+                    };
+                    if let Some(hidx) = highlight {
+                        if idx == hidx {
+                            text = text.color(theme.palette().success);
                         }
                     }
-                    pl::AnyValue::String(value) => widget::text(value.to_string()),
-                    pl::AnyValue::Float64(value) => widget::text(format!("{value:?}")),
-                    pl::AnyValue::UInt8(value) => widget::text(format!("{value:?}")),
-                    pl::AnyValue::Int64(value) => widget::text(format!("{value:?}")),
-                    pl::AnyValue::Int128(value) => widget::text(format!("{value:?}")),
-                    value => todo!("data table display {value:?}"),
-                };
-                if let Some(highlight) = &self.highlight {
-                    if idx == *highlight {
-                        text = text.color(theme.palette().success);
-                    }
-                }
-                text
+                    text
+                })
             })
-        });
+            .collect();
 
-        let table = widget::table::Table::new(columns, 0..df.height());
+        let table = widget::table::Table::new(columns, 0..height);
         widget::scrollable(table)
             .direction(iced::widget::scrollable::Direction::Both {
                 vertical: iced::widget::scrollable::Scrollbar::new(),
