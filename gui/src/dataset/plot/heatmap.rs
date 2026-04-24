@@ -451,10 +451,41 @@ mod data {
                 }
             };
 
-            let points = itertools::izip!(self.points.iter_idx(), x, y, colors);
-            for (iid, x, y, color) in points {
-                Self::draw_point(plot, iid, x, y, color);
+            let xmin = x.iter().fold(f64::INFINITY, |a, b| a.min(*b));
+            let xmax = x.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
+            let ymin = x.iter().fold(f64::INFINITY, |a, b| a.min(*b));
+            let ymax = x.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
+            let centers = std::iter::zip(x, y).collect::<Vec<_>>();
+            let voronoi = voronator::VoronoiDiagram::<voronator::delaunator::Point>::from_tuple(
+                &(xmin, ymin),
+                &(xmax, ymax),
+                &centers,
+            )
+            .expect("could not create voronoi diagram");
+
+            let cells = voronoi
+                .cells()
+                .into_iter()
+                .filter(|cell| cell.points().len() > 0)
+                .map(|cell| {
+                    let pts = cell
+                        .points()
+                        .iter()
+                        .map(|pt| aksel::PlotPoint::new(pt.x, pt.y))
+                        .collect();
+
+                    aksel::shape::Area::new(pts).fill(base_color)
+                });
+            tracing::error!(?cells);
+
+            for cell in cells {
+                plot.render(cell);
             }
+
+            // let points = itertools::izip!(self.points.iter_idx(), x, y, colors);
+            // for (iid, x, y, color) in points {
+            //     Self::draw_point(plot, iid, x, y, color);
+            // }
         }
 
         #[inline]
