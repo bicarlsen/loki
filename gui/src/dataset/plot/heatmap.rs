@@ -47,11 +47,15 @@ impl Points {
 #[derive(Debug, Clone)]
 pub struct Options {
     index: Index,
+    show_centers: bool,
 }
 
 impl Options {
     pub fn new(index: Index) -> Self {
-        Self { index }
+        Self {
+            index,
+            show_centers: Default::default(),
+        }
     }
 }
 
@@ -103,7 +107,7 @@ impl State {
             &df.read().expect("dataframe should be readable"),
             &options.index,
         );
-        let data = data::State::new(df, options.index.clone());
+        let data = data::State::new(df, options.index.clone(), options.show_centers);
 
         Self {
             chart,
@@ -241,10 +245,12 @@ impl State {
 }
 
 mod data {
+    use std::collections::BTreeMap;
+
     use super::super::utils;
     use super::{SharedDataframe, ValueType, axis};
     use iced_aksel::{self as aksel, interaction::IntoArea};
-    use palette::ShiftHue;
+    use palette::{Darken, ShiftHue};
 
     #[derive(Debug, Clone)]
     pub enum PlotInteraction {
@@ -283,18 +289,23 @@ mod data {
     pub struct State {
         pub(super) df: SharedDataframe,
         pub(super) index: super::Index,
+        /// Show region centers.
+        pub(super) show_centers: bool,
+        /// Indicates whether multiple values exist for a single coordinate.
         points: super::Points,
         hovered_id: Option<aksel::interaction::Id>,
         selected_id: Option<aksel::interaction::Id>,
     }
 
     impl State {
-        pub fn new(df: SharedDataframe, index: super::Index) -> Self {
-            let points =
-                super::Points::new(df.read().expect("dataframe should be readable").height());
+        pub fn new(df: SharedDataframe, index: super::Index, show_centers: bool) -> Self {
+            let dfg = df.read().expect("dataframe should be readable");
+            let points = super::Points::new(dfg.height());
+            drop(dfg);
             Self {
                 df,
                 index,
+                show_centers,
                 points,
                 hovered_id: None,
                 selected_id: None,
@@ -405,33 +416,41 @@ mod data {
     }
 
     impl State {
+        // TODO: Handle degenerate case of 0 or 1 points to plot.
         fn draw(&self, plot: &mut aksel::Plot<ValueType, super::Message>, base_color: iced::Color) {
+            #[derive(Clone)]
+            struct Coord {
+                x: f64,
+                y: f64,
+            }
+            impl PartialEq for Coord {
+                fn eq(&self, other: &Self) -> bool {
+                    self.x == other.x && self.y == other.y
+                }
+            }
+            impl Eq for Coord {}
+
+            impl PartialOrd for Coord {
+                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                    let mut ord = self.x.total_cmp(&other.x);
+                    if matches!(ord, std::cmp::Ordering::Equal) {
+                        ord = self.y.total_cmp(&other.y);
+                    }
+                    Some(ord)
+                }
+            }
+            impl Ord for Coord {
+                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                    self.partial_cmp(other).unwrap()
+                }
+            }
+
+            struct Point {
+                coord: Coord,
+                z: f64,
+            }
+
             let df = self.df.read().expect("dataframe should be readable");
-            let base_color_lch = utils::color_to_lch(base_color);
-
-            let colors = match &self.index.z.values {
-                axis::IndexValues::Index => {
-                    let height = df.height();
-                    (0..height)
-                        .map(|idx| idx as f32 / height as f32)
-                        .map(|scale| base_color_lch.shift_hue(scale * 180.0))
-                        .map(utils::lch_to_color)
-                        .collect::<Vec<_>>()
-                }
-                axis::IndexValues::Series(column) => {
-                    let col = df.column(column).expect("column should exist");
-                    let (min, max) = utils::column_minmax_f64(col);
-                    let scaled = (col - min) / max;
-                    utils::column_to_values_f64(&scaled)
-                        .into_iter()
-                        .map(|scale| base_color_lch.shift_hue(scale as f32 * 180.0))
-                        .map(utils::lch_to_color)
-                        .collect::<Vec<_>>()
-                }
-            };
-
-            // TODO: Handle hovered region color.
-
             let x = match &self.index.x.values {
                 axis::IndexValues::Series(column) => {
                     let x = df.column(column).unwrap();
@@ -450,42 +469,113 @@ mod data {
                     (0..df.height()).map(|y| y as ValueType).collect::<Vec<_>>()
                 }
             };
+            let z = match &self.index.z.values {
+                axis::IndexValues::Series(column) => {
+                    let z = df.column(column).unwrap();
+                    utils::column_to_values_f64(z)
+                }
+                axis::IndexValues::Index => {
+                    (0..df.height()).map(|z| z as ValueType).collect::<Vec<_>>()
+                }
+            };
+            let zmin = z.iter().fold(f64::INFINITY, |a, b| a.min(*b));
+            let zmax = z.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
 
-            let xmin = x.iter().fold(f64::INFINITY, |a, b| a.min(*b));
-            let xmax = x.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
-            let ymin = x.iter().fold(f64::INFINITY, |a, b| a.min(*b));
-            let ymax = x.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
-            let centers = std::iter::zip(x, y).collect::<Vec<_>>();
+            let coords = itertools::izip!(x, y, z)
+                .map(|(x, y, z)| Point {
+                    coord: Coord { x, y },
+                    z,
+                })
+                .collect::<Vec<_>>();
+            let mut pts = BTreeMap::<Coord, Vec<f64>>::new();
+            for coord in coords {
+                pts.entry(coord.coord)
+                    .and_modify(|vals| vals.push(coord.z))
+                    .or_insert(vec![coord.z]);
+            }
+
+            let xmin = pts
+                .keys()
+                .fold(f64::INFINITY, |cur, coord| cur.min(coord.x));
+            let ymin = pts
+                .keys()
+                .fold(f64::INFINITY, |cur, coord| cur.min(coord.y));
+            let xmax = pts
+                .keys()
+                .fold(f64::NEG_INFINITY, |cur, coord| cur.max(coord.x));
+            let ymax = pts
+                .keys()
+                .fold(f64::NEG_INFINITY, |cur, coord| cur.max(coord.y));
+
+            let base_color_lch = utils::color_to_lch(base_color);
+            let colors = pts
+                .iter()
+                .map(|(coord, vals)| {
+                    let colors = vals
+                        .iter()
+                        .map(|z| {
+                            let scale = (z - zmin) / (zmax - zmin);
+                            base_color_lch.shift_hue(scale as f32 * 180.0)
+                        })
+                        .collect();
+
+                    (coord.clone(), colors)
+                })
+                .collect::<BTreeMap<Coord, Vec<_>>>();
+
+            let centers = pts
+                .keys()
+                .map(|coord| (coord.x, coord.y))
+                .collect::<Vec<_>>();
+
+            const SHIFT_SCALE: f64 = 1.0;
+            let xshift = (xmax - xmin) * SHIFT_SCALE;
+            let yshift = (ymax - ymin) * SHIFT_SCALE;
+            let xbmin = xmin - xshift;
+            let xbmax = xmax + xshift;
+            let ybmin = ymin - yshift;
+            let ybmax = ymax + yshift;
             let voronoi = voronator::VoronoiDiagram::<voronator::delaunator::Point>::from_tuple(
-                &(xmin, ymin),
-                &(xmax, ymax),
+                &(xbmin, ybmin),
+                &(xbmax, ybmax),
                 &centers,
             )
             .expect("could not create voronoi diagram");
 
-            let cells = voronoi
+            voronoi
                 .cells()
                 .into_iter()
                 .filter(|cell| cell.points().len() > 0)
-                .map(|cell| {
+                .enumerate()
+                .map(|(idx, cell)| {
                     let pts = cell
                         .points()
                         .iter()
                         .map(|pt| aksel::PlotPoint::new(pt.x, pt.y))
                         .collect();
 
-                    aksel::shape::Area::new(pts).fill(base_color)
-                });
-            tracing::error!(?cells);
+                    let color = colors.values().skip(idx).take(1).collect::<Vec<_>>()[0][0];
+                    let color = utils::lch_to_color(color);
+                    aksel::shape::Area::new(pts).fill(color)
+                })
+                .for_each(|cell| plot.render(cell));
 
-            for cell in cells {
-                plot.render(cell);
+            if self.show_centers {
+                pts.iter()
+                    .enumerate()
+                    .map(|(idx, (coord, vals))| {
+                        let color = colors.values().skip(idx).take(1).collect::<Vec<_>>()[0][0];
+                        let color = color.darken(0.3);
+                        let color = utils::lch_to_color(color);
+
+                        aksel::shape::Ellipse::circle(
+                            aksel::PlotPoint::new(coord.x, coord.y),
+                            aksel::Measure::Screen(2.0),
+                        )
+                        .fill(color)
+                    })
+                    .for_each(|pt| plot.render(pt));
             }
-
-            // let points = itertools::izip!(self.points.iter_idx(), x, y, colors);
-            // for (iid, x, y, color) in points {
-            //     Self::draw_point(plot, iid, x, y, color);
-            // }
         }
 
         #[inline]
