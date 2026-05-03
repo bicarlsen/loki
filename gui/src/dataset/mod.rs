@@ -390,6 +390,14 @@ impl Dataset {
                     .write()
                     .expect("could not acquire lock for dataframe");
                 *curr = df;
+                drop(curr);
+
+                let action = self.plot.update(plot::Message::DataframeChange);
+                assert!(
+                    matches!(action, plot::Action::None),
+                    "updating dataframe should not require action"
+                );
+
                 Action::None
             }
         }

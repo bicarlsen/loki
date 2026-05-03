@@ -9,7 +9,7 @@ pub mod scatter;
 
 #[derive(Debug, Clone, derive_more::From)]
 pub enum Message {
-    DataframeChange(pl::DataFrame),
+    DataframeChange,
     SetMode(mode::Options),
     Mode(mode::Message),
 }
@@ -50,7 +50,7 @@ impl State {
 impl State {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::DataframeChange(df) => self.dataframe_change(df),
+            Message::DataframeChange => self.dataframe_change(),
             Message::SetMode(mode) => todo!("{mode:?}"),
             Message::Mode(message) => match message {
                 mode::Message::Scatter(message) => {
@@ -77,8 +77,18 @@ impl State {
         }
     }
 
-    fn dataframe_change(&mut self, df: pl::DataFrame) -> Action {
-        todo!("dataframe change");
+    fn dataframe_change(&mut self) -> Action {
+        match &mut self.mode {
+            mode::Mode::Scatter(state) => todo!("update dataframe in scatter mode"),
+            mode::Mode::Heatmap(state) => {
+                let action = state.update(heatmap::Message::DataframeChanged);
+                assert!(
+                    matches!(action, heatmap::Action::None),
+                    "update should not result in action"
+                );
+                Action::None
+            }
+        }
     }
 }
 

@@ -1,4 +1,6 @@
 //! Heatmap.
+use crate::dataset::plot::heatmap::data::PlotUpdate;
+
 use super::SharedDataframe;
 use iced_aksel as aksel;
 use polars::prelude as pl;
@@ -86,6 +88,7 @@ pub enum PlotInteraction {
 
 #[derive(Debug, Clone, derive_more::From)]
 pub enum Message {
+    DataframeChanged,
     Plot(PlotInteraction),
     Data(data::Message),
 }
@@ -140,9 +143,22 @@ impl State {
             })
             .on_scroll(|event| Message::Plot(PlotInteraction::Scrolled(event)));
 
+        let colorbar = iced::widget::container(iced::widget::space().height(100.0).width(20.0))
+            .style(|theme| {
+                iced::widget::container::background(iced::Background::Gradient(
+                    iced::Gradient::Linear(
+                        iced::gradient::Linear::new(0.0)
+                            .add_stop(0.0, iced::Color::WHITE)
+                            .add_stop(1.0, iced::Color::BLACK),
+                    ),
+                ))
+            });
+
+        let plot = iced::widget::row![chart, colorbar];
+
         let data_controls = self.data.get().view();
         iced::widget::column![
-            iced::widget::container(chart),
+            iced::widget::container(plot).padding(iced::Padding::from(10.0)),
             data_controls.map(Message::Data)
         ]
         .into()
@@ -152,20 +168,22 @@ impl State {
 impl State {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
+            Message::DataframeChanged => {
+                match self.data.edit().update(data::Message::DataframeChanged) {
+                    data::Action::None => Action::None,
+                    data::Action::UpdatePlot(update) => {
+                        self.update_plot(update);
+                        Action::None
+                    }
+                }
+            }
             Message::Plot(message) => self.update_chart(message),
             Message::Data(message) => match self.data.edit().update(message) {
                 data::Action::None => Action::None,
-                data::Action::UpdatePlot(update) => match update {
-                    data::PlotUpdate::XValuesChanged => {
-                        self.rescale_xaxis();
-                        Action::None
-                    }
-                    data::PlotUpdate::YValuesChanged => {
-                        self.rescale_yaxis();
-                        Action::None
-                    }
-                    data::PlotUpdate::ZValuesChanged => Action::None,
-                },
+                data::Action::UpdatePlot(update) => {
+                    self.update_plot(update);
+                    Action::None
+                }
             },
         }
     }
@@ -225,6 +243,22 @@ impl State {
         }
     }
 
+    fn update_plot(&mut self, update: PlotUpdate) {
+        match update {
+            data::PlotUpdate::AllChanged => {
+                self.rescale_xaxis();
+                self.rescale_yaxis();
+            }
+            data::PlotUpdate::XValuesChanged => {
+                self.rescale_xaxis();
+            }
+            data::PlotUpdate::YValuesChanged => {
+                self.rescale_yaxis();
+            }
+            data::PlotUpdate::ZValuesChanged => {}
+        }
+    }
+
     fn rescale_xaxis(&mut self) {
         let data = self.data.get();
         let axis = data.index.x.to_aksel(
@@ -267,6 +301,7 @@ mod data {
 
     #[derive(Debug, Clone)]
     pub enum Message {
+        DataframeChanged,
         UpdateXValues(axis::IndexValues),
         UpdateYValues(axis::IndexValues),
         UpdateZValues(axis::IndexValues),
@@ -278,6 +313,7 @@ mod data {
         XValuesChanged,
         YValuesChanged,
         ZValuesChanged,
+        AllChanged,
     }
 
     #[derive(Debug, Clone, derive_more::From)]
@@ -375,6 +411,7 @@ mod data {
     impl State {
         pub fn update(&mut self, message: Message) -> Action {
             match message {
+                Message::DataframeChanged => self.refresh_with_dataframe(),
                 Message::UpdateXValues(value) => self.update_x_axis_values(value),
                 Message::UpdateYValues(value) => self.update_y_axis_values(value),
                 Message::UpdateZValues(value) => self.update_z_axis_values(value),
@@ -394,6 +431,32 @@ mod data {
                     let _ = self.hovered_id.take();
                 }
             }
+        }
+
+        /// Reset state based on the current dataframe.
+        fn refresh_with_dataframe(&mut self) -> Action {
+            let df = self.df.read().expect("dataframe should be readable");
+            self.points = super::Points::new(df.height());
+            self.hovered_id = None;
+            self.selected_id = None;
+
+            if let axis::IndexValues::Series(col) = &self.index.x.values {
+                if df.column(col).is_err() {
+                    self.index.x.values = axis::IndexValues::Index;
+                }
+            };
+            if let axis::IndexValues::Series(col) = &self.index.y.values {
+                if df.column(col).is_err() {
+                    self.index.y.values = axis::IndexValues::Index;
+                }
+            };
+            if let axis::IndexValues::Series(col) = &self.index.z.values {
+                if df.column(col).is_err() {
+                    self.index.z.values = axis::IndexValues::Index;
+                }
+            };
+
+            Action::UpdatePlot(PlotUpdate::AllChanged)
         }
 
         fn update_x_axis_values(&mut self, values: axis::IndexValues) -> Action {

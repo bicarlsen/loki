@@ -227,25 +227,60 @@ impl App {
             }
             data_server::Message::DataRequest { transform, tx } => {
                 let data_server::TransformUri { dataset, transform } = transform;
-                iced::Task::done(Message::Dataset {
-                    id: dataset,
-                    message: dataset::pipeline::Message::IpcDataframeRequest { transform, tx }
-                        .into(),
-                })
+                let dataset = self
+                    .datasets
+                    .get_mut(&dataset)
+                    .expect("dataset should exist");
+                let action = dataset.update(
+                    dataset::pipeline::Message::IpcDataframeRequest { transform, tx }.into(),
+                );
+
+                match action {
+                    dataset::Action::None => iced::Task::none(),
+                    dataset::Action::Run(task) => task.map({
+                        let id = dataset.path().clone();
+                        move |message| Message::Dataset {
+                            id: id.clone(),
+                            message,
+                        }
+                    }),
+                    dataset::Action::ChildWindowOpened { .. }
+                    | dataset::Action::RegisterTransformScript { .. } => {
+                        panic!("unexpected action")
+                    }
+                }
             }
             data_server::Message::DataProduced {
                 transform,
                 dataframe,
             } => {
                 let data_server::TransformUri { dataset, transform } = transform;
-                iced::Task::done(Message::Dataset {
-                    id: dataset,
-                    message: dataset::pipeline::Message::IpcDataframeProdcued {
+                let dataset = self
+                    .datasets
+                    .get_mut(&dataset)
+                    .expect("dataset should exist");
+                let action = dataset.update(
+                    dataset::pipeline::Message::IpcDataframeProdcued {
                         transform,
                         dataframe,
                     }
                     .into(),
-                })
+                );
+
+                match action {
+                    dataset::Action::None => iced::Task::none(),
+                    dataset::Action::Run(task) => task.map({
+                        let id = dataset.path().clone();
+                        move |message| Message::Dataset {
+                            id: id.clone(),
+                            message,
+                        }
+                    }),
+                    dataset::Action::ChildWindowOpened { .. }
+                    | dataset::Action::RegisterTransformScript { .. } => {
+                        panic!("unexpected action")
+                    }
+                }
             }
         }
     }
