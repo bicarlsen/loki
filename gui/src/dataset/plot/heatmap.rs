@@ -8,6 +8,7 @@ use polars::prelude as pl;
 
 type ValueType = f64;
 
+const HUE_RANGE: f32 = 180.0;
 pub struct Points {
     by_idx: Vec<aksel::interaction::Id>,
     by_id: std::collections::HashMap<aksel::interaction::Id, usize>,
@@ -170,13 +171,18 @@ impl State {
         let colorbar = iced::widget::container(iced::widget::space::vertical().width(20.0)).style(
             |theme: &iced::Theme| {
                 let zmin_color = theme.palette().primary;
+                let zmid_color = super::utils::lch_to_color(
+                    // needed to force the gradient to traverse hues in the correct direction
+                    super::utils::color_to_lch(zmin_color.clone()).shift_hue(HUE_RANGE / 2.0),
+                );
                 let zmax_color = super::utils::lch_to_color(
-                    super::utils::color_to_lch(zmin_color.clone()).shift_hue(180.0),
+                    super::utils::color_to_lch(zmin_color.clone()).shift_hue(HUE_RANGE),
                 );
                 iced::widget::container::background(iced::Background::Gradient(
                     iced::Gradient::Linear(
                         iced::gradient::Linear::new(0.0)
                             .add_stop(0.0, zmin_color)
+                            .add_stop(0.5, zmid_color)
                             .add_stop(1.0, zmax_color),
                     ),
                 ))
@@ -303,6 +309,8 @@ impl State {
 
 mod data {
     use std::collections::BTreeMap;
+
+    use crate::dataset::plot::heatmap::HUE_RANGE;
 
     use super::super::utils;
     use super::{SharedDataframe, ValueType, axis};
@@ -604,7 +612,7 @@ mod data {
                                 palette::Oklch::from_components((0.0, 0.0, 0.0))
                             } else {
                                 let scale = (z - zmin) / (zmax - zmin);
-                                base_color_lch.shift_hue(scale as f32 * 180.0)
+                                base_color_lch.shift_hue(scale as f32 * HUE_RANGE)
                             }
                         })
                         .collect();
