@@ -10,6 +10,7 @@ use std::{
 mod data_server;
 mod dataset;
 mod icon;
+mod settings;
 mod workspace;
 
 fn main() -> iced::Result {
@@ -24,6 +25,8 @@ fn main() -> iced::Result {
 
 #[derive(Debug, derive_more::From)]
 enum Message {
+    #[from]
+    AppSettings(settings::Message),
     /// A workspace message.
     #[from]
     Workspace(workspace::Message),
@@ -67,6 +70,7 @@ enum Message {
 #[derive(Clone, Debug)]
 enum WindowKind {
     Workspace,
+    AppSettings,
     Dataset(PathBuf),
     DatasetChild {
         dataset: PathBuf,
@@ -75,7 +79,7 @@ enum WindowKind {
 }
 
 struct App {
-    theme: iced::Theme,
+    settings: settings::AppSettings,
     workspace: workspace::Workspace,
     datasets: HashMap<PathBuf, dataset::Dataset>,
     windows: HashMap<iced::window::Id, WindowKind>,
@@ -83,8 +87,9 @@ struct App {
 }
 
 impl App {
-    pub fn theme(&self, window: iced::window::Id) -> iced::Theme {
-        self.theme.clone()
+    // TODO: Allow per window theming for datasets.
+    pub fn theme(&self, _window: iced::window::Id) -> iced::Theme {
+        self.settings.theme.clone()
     }
 }
 
@@ -92,7 +97,7 @@ impl App {
     fn new() -> (Self, iced::Task<Message>) {
         let (workspace, workspace_open) = workspace::Workspace::new();
         let app = Self {
-            theme: iced::Theme::CatppuccinFrappe,
+            settings: Default::default(),
             workspace,
             datasets: Default::default(),
             windows: Default::default(),
@@ -116,11 +121,12 @@ impl App {
             return iced::widget::space().into();
         };
         match kind {
+            WindowKind::AppSettings => self.settings.view().map(Message::AppSettings),
             WindowKind::Workspace => self.workspace.view().map(Message::Workspace),
             WindowKind::Dataset(path) | WindowKind::DatasetChild { dataset: path, .. } => {
                 let dataset = self.datasets.get(path).expect("dataset should exist");
                 dataset
-                    .view(&self.theme, &window)
+                    .view(&self.settings.theme, &window)
                     .map(move |msg| Message::Dataset {
                         id: path.clone(),
                         message: msg,
@@ -145,6 +151,7 @@ impl App {
 
         match message {
             Message::AppClosed => self.exit(),
+            Message::AppSettings(message) => self.settings_update(message),
             Message::Workspace(message) => self.workspace_message(message),
             Message::Dataset { id, message } => self.dataset_message(id, message),
             Message::DataServer(message) => self.data_server(message),
@@ -169,6 +176,13 @@ impl App {
                 iced::Task::done(workspace::Message::DatasetClosed { path: dataset }.into())
             }
             Message::ClearDatasets => self.clear_datasets(),
+        }
+    }
+
+    fn settings_update(&mut self, message: settings::Message) -> iced::Task<Message> {
+        match self.settings.update(message) {
+            settings::Action::None => iced::Task::none(),
+            settings::Action::Run(task) => task.map(Into::into),
         }
     }
 
@@ -302,6 +316,7 @@ impl App {
         let focus = iced::window::gain_focus(id.clone());
         let task = match &kind {
             WindowKind::Workspace => focus,
+            WindowKind::AppSettings => focus,
             WindowKind::Dataset(path) => {
                 let _ = self
                     .windows
@@ -341,6 +356,7 @@ impl App {
         let window = self.windows.remove(&id).expect("window should exist");
         match window {
             WindowKind::Workspace => iced::Task::none(),
+            WindowKind::AppSettings => iced::Task::none(),
             WindowKind::Dataset(path) => {
                 let last_dataset_window = !self.windows.values().any(|window| {
                     if let WindowKind::DatasetChild { dataset, .. } = window {
@@ -366,6 +382,7 @@ impl App {
 
                 let last_dataset_window = !self.windows.values().any(|window| match window {
                     WindowKind::Workspace => false,
+                    WindowKind::AppSettings => false,
                     WindowKind::Dataset(other) => *other == dataset,
                     WindowKind::DatasetChild { dataset: other, .. } => *other == dataset,
                 });
@@ -427,6 +444,10 @@ impl App {
         match action {
             workspace::Action::None => iced::Task::none(),
             workspace::Action::Run(task) => task.map(Message::Workspace),
+            workspace::Action::AppSettingsWindowOpened(id) => {
+                self.windows.insert(id, WindowKind::AppSettings);
+                iced::Task::none()
+            }
             workspace::Action::LoadDatasetFile(path) => self.try_load_dataset_file(path),
             workspace::Action::LoadDatasetDir(path) => self.try_load_dataset_dir(path),
             #[cfg(feature = "project")]

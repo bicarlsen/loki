@@ -3,6 +3,7 @@ use crate::dataset::plot::heatmap::data::PlotUpdate;
 
 use super::SharedDataframe;
 use iced_aksel as aksel;
+use palette::ShiftHue;
 use polars::prelude as pl;
 
 type ValueType = f64;
@@ -101,6 +102,7 @@ pub enum Action {
 pub(super) struct State {
     chart: aksel::State<&'static str, ValueType>,
     data: aksel::Cached<data::State>,
+    df: SharedDataframe,
     options: Options,
 }
 
@@ -110,11 +112,12 @@ impl State {
             &df.read().expect("dataframe should be readable"),
             &options.index,
         );
-        let data = data::State::new(df, options.index.clone(), options.show_centers);
+        let data = data::State::new(df.clone(), options.index.clone(), options.show_centers);
 
         Self {
             chart,
             data: aksel::Cached::new(data),
+            df,
             options,
         }
     }
@@ -143,25 +146,45 @@ impl State {
             })
             .on_scroll(|event| Message::Plot(PlotInteraction::Scrolled(event)));
 
-        let colorbar = iced::widget::container(iced::widget::space().height(100.0).width(20.0))
-            .style(|theme| {
-                iced::widget::container::background(iced::Background::Gradient(
-                    iced::Gradient::Linear(
-                        iced::gradient::Linear::new(0.0)
-                            .add_stop(0.0, iced::Color::WHITE)
-                            .add_stop(1.0, iced::Color::BLACK),
-                    ),
-                ))
-            });
-
+        let colorbar = iced::widget::container(self.colorbar()).padding(10.0);
         let plot = iced::widget::row![chart, colorbar];
 
         let data_controls = self.data.get().view();
-        iced::widget::column![
-            iced::widget::container(plot).padding(iced::Padding::from(10.0)),
-            data_controls.map(Message::Data)
-        ]
-        .into()
+        iced::widget::column![plot, data_controls.map(Message::Data)].into()
+    }
+
+    fn colorbar(&self) -> iced::Element<'_, Message> {
+        let data = self.data.get();
+        let df = self.df.read().expect("dataframe shoudl exist");
+        let (zmin, zmax) = match &data.index.z.values {
+            axis::IndexValues::Index => ("0".to_string(), df.height().to_string()),
+            axis::IndexValues::Series(name) => {
+                let (zmin, zmax) =
+                    super::utils::column_minmax_f64(df.column(name).expect("column should exist"));
+                (format!("{zmin:0.2e}"), format!("{zmax:.2e}"))
+            }
+        };
+        let zmin = iced::widget::text(zmin);
+        let zmax = iced::widget::text(zmax);
+
+        let colorbar = iced::widget::container(iced::widget::space::vertical().width(20.0)).style(
+            |theme: &iced::Theme| {
+                let zmin_color = theme.palette().primary;
+                let zmax_color = super::utils::lch_to_color(
+                    super::utils::color_to_lch(zmin_color.clone()).shift_hue(180.0),
+                );
+                iced::widget::container::background(iced::Background::Gradient(
+                    iced::Gradient::Linear(
+                        iced::gradient::Linear::new(0.0)
+                            .add_stop(0.0, zmin_color)
+                            .add_stop(1.0, zmax_color),
+                    ),
+                ))
+            },
+        );
+        iced::widget::column![zmax, iced::widget::center_x(colorbar), zmin]
+            .width(iced::Shrink)
+            .into()
     }
 }
 
@@ -577,8 +600,12 @@ mod data {
                     let colors = vals
                         .iter()
                         .map(|z| {
-                            let scale = (z - zmin) / (zmax - zmin);
-                            base_color_lch.shift_hue(scale as f32 * 180.0)
+                            if z.is_nan() {
+                                palette::Oklch::from_components((0.0, 0.0, 0.0))
+                            } else {
+                                let scale = (z - zmin) / (zmax - zmin);
+                                base_color_lch.shift_hue(scale as f32 * 180.0)
+                            }
                         })
                         .collect();
 
@@ -742,13 +769,24 @@ pub mod axis {
     fn axis_renderer_ticks()
     -> impl Fn(aksel::axis::TickContext<ValueType>) -> aksel::axis::TickResult + 'static {
         move |ctx: aksel::axis::TickContext<ValueType>| {
-            let text = format!("{:.02e}", ctx.tick.value);
-            let label = ctx.label(text);
+            let label = if ctx.tick.level == 0 {
+                let text = format!("{:.02e}", ctx.tick.value);
+                Some(ctx.label(text))
+            } else {
+                None
+            };
+
+            let mut tickline = ctx.tickline();
+            if ctx.tick.level == 0 {
+                tickline.length = 10.0.into();
+            } else {
+                tickline.length = 5.0.into();
+            };
 
             aksel::axis::TickResult {
-                label: Some(label),
+                label,
                 label_badge: Some(ctx.label_badge()),
-                tick_line: Some(ctx.tickline()),
+                tick_line: Some(tickline),
                 grid_line: Some(ctx.gridline()),
                 label_priority: None,
             }

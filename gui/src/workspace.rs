@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Open app settings.
+    OpenSettings,
+    /// App settings opened.
+    SettingsOpened(iced::window::Id),
+    /// App settings closed.
+    SettingsClosed,
     /// Open a dataset file chooser.
     PromptOpenDatasetFile,
     /// Open a dataset directory chooser.
@@ -14,7 +20,7 @@ pub enum Message {
     LoadDatasetFilePathSelected(PathBuf),
     /// The user selected a dataset directory path to try to open.
     LoadDatasetDirPathSelected(PathBuf),
-    // A dataset is loading.
+    /// A dataset is loading.
     DatasetLoading {
         path: PathBuf,
     },
@@ -52,6 +58,8 @@ pub enum Message {
 pub enum Action {
     None,
     Run(iced::Task<Message>),
+    /// App settings window opened.
+    AppSettingsWindowOpened(iced::window::Id),
     /// Try to load the file as a dataset.
     LoadDatasetFile(PathBuf),
     /// Try to load the directory as a dataset.
@@ -104,6 +112,7 @@ impl Dataset {
 
 pub(crate) struct Workspace {
     _title: String,
+    app_settings: Option<iced::window::Id>,
     datasets: Vec<Dataset>,
 }
 
@@ -111,6 +120,7 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             _title: "jpk reader".into(),
+            app_settings: Default::default(),
             datasets: Default::default(),
         }
     }
@@ -148,6 +158,18 @@ impl Workspace {
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
+            Message::OpenSettings => {
+                let (_, open) = iced::window::open(Default::default());
+                Action::Run(open.map(Message::SettingsOpened))
+            }
+            Message::SettingsOpened(id) => {
+                let _ = self.app_settings.insert(id.clone());
+                Action::AppSettingsWindowOpened(id)
+            }
+            Message::SettingsClosed => {
+                let _ = self.app_settings.take();
+                Action::None
+            }
             Message::PromptOpenDatasetFile => Action::Run(self.maybe_open_dataset_file()),
             Message::PromptOpenDatasetDir => Action::Run(self.maybe_open_dataset_dir()),
             Message::LoadDatasetFilePathSelected(path) => Action::LoadDatasetFile(path),
@@ -210,10 +232,13 @@ impl Workspace {
             iced::widget::button(icon::file()).on_press(Message::PromptOpenDatasetFile);
         let btn_open_dataset_dir =
             iced::widget::button(icon::folder()).on_press(Message::PromptOpenDatasetDir);
-        let dataset_commands = iced::widget::column![iced::widget::row![
+        let btn_open_settings = iced::widget::button(icon::cog()).on_press(Message::OpenSettings);
+        let dataset_commands = iced::widget::row![
             btn_open_dataset_file,
-            btn_open_dataset_dir
-        ]];
+            btn_open_dataset_dir,
+            iced::widget::space::horizontal(),
+            btn_open_settings,
+        ];
 
         let common_base_path =
             common_path_all(self.datasets.iter().map(|dataset| dataset.path.as_path()))
