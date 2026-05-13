@@ -8,8 +8,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::icon;
+
 #[derive(Clone, Debug)]
 pub enum Message {
+    /// Set the active layer.
+    SetActiveLayer(TransformId),
+    /// Copy text to the system clipboard.
+    CopyToClipboard(String),
     PromptTransformScript,
     PushTransformScript(PathBuf),
     TransformOutputUpdated(TransformId),
@@ -87,6 +93,7 @@ pub(super) struct Pipeline {
     raw: pl::DataFrame,
     transforms: Vec<Transform>,
     cache: HashMap<TransformId, pl::DataFrame>,
+    active_layer: TransformId,
 }
 
 impl Pipeline {
@@ -95,6 +102,7 @@ impl Pipeline {
             raw: df,
             transforms: Default::default(),
             cache: Default::default(),
+            active_layer: Default::default(),
         }
     }
 
@@ -139,29 +147,58 @@ impl Pipeline {
         let controls_r1 = widget::row![btn_ctrl_add_script];
         let controls = widget::column![controls_r1];
 
-        let stages = std::iter::once(widget::text("raw").into())
-            .chain(self.transforms.iter().map(|transform| {
-                widget::tooltip(
-                    widget::text(transform),
-                    widget::text(crate::data_server::TransformUri::key_of(
-                        &dataset,
-                        transform.id,
-                    )),
-                    widget::tooltip::Position::Right,
-                )
-                .delay(std::time::Duration::from_millis(300))
-                .into()
+        let raw = widget::button("raw").on_press(Message::SetActiveLayer(0));
+        let stages = std::iter::once(raw.into())
+            .chain(self.transforms.iter().enumerate().map(|(idx, transform)| {
+                Self::view_transform_layer(1 + idx as TransformId, transform, &dataset)
             }))
             .collect::<Vec<iced::Element<'_, Message>>>();
         let pipeline = widget::column(stages);
 
         widget::column![controls, pipeline].into()
     }
+
+    #[inline]
+    fn view_transform_layer(
+        id: TransformId,
+        transform: &Transform,
+        dataset: impl AsRef<Path>,
+    ) -> iced::Element<'_, Message> {
+        match &transform.kind {
+            TransformKind::Script { file, .. } => {
+                let btn_main = widget::button("Script").on_press(Message::SetActiveLayer(id));
+                let tt_main = widget::tooltip(
+                    btn_main,
+                    widget::text(file.to_string_lossy().to_owned()),
+                    widget::tooltip::Position::Top,
+                )
+                .delay(std::time::Duration::from_millis(300));
+
+                let key = crate::data_server::TransformUri::key_of(&dataset, transform.id);
+                let btn_key =
+                    widget::button(icon::copy()).on_press(Message::CopyToClipboard(key.clone()));
+                let tt_key =
+                    widget::tooltip(btn_key, widget::text(key), widget::tooltip::Position::Top);
+
+                widget::column![tt_main, tt_key].into()
+            }
+        }
+    }
 }
 
 impl Pipeline {
     pub(super) fn update(&mut self, message: Message) -> Action {
         match message {
+            Message::SetActiveLayer(idx) => {
+                if self.active_layer == idx {
+                    return Action::None;
+                }
+
+                todo!("set active layer");
+            }
+            Message::CopyToClipboard(contents) => {
+                Action::Run(iced::clipboard::write_primary(contents))
+            }
             Message::PromptTransformScript => self.prompt_new_transform_script(),
             Message::PushTransformScript(path) => {
                 let id = self.push(TransformKind::Script {
@@ -203,10 +240,15 @@ impl Pipeline {
             .transform_is_last(transform)
             .expect("transform should exist")
         {
+            if self.active_layer == transform - 1 {
+                self.active_layer = transform;
+            }
+
             let df = self
                 .cache
                 .get(&transform)
                 .expect("latest dataframe should be cached");
+
             return Action::UpdateDataframe(df.clone());
         }
 

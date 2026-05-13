@@ -32,7 +32,13 @@ impl Settings {
 
     pub fn view(&self) -> iced::Element<'_, Message> {
         let title = iced::widget::text("Settings");
+        let pl_mode = self.view_mode();
 
+        iced::widget::column![title, pl_mode].into()
+    }
+
+    #[inline]
+    fn view_mode(&self) -> iced::Element<'_, Message> {
         let pl_mode = iced::widget::pick_list(
             [
                 super::plot::mode::Kind::Scatter,
@@ -41,8 +47,7 @@ impl Settings {
             Some(self.mode),
             Message::SetMode,
         );
-        let pl_mode = iced::widget::row![iced::widget::text("Plot mode"), pl_mode];
 
-        iced::widget::column![title, pl_mode].into()
+        iced::widget::row![iced::widget::text("Plot mode"), pl_mode].into()
     }
 }

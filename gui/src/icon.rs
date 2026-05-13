@@ -1,6 +1,6 @@
 // Generated automatically by iced_fontello at build time.
 // Do not edit manually. Source: ../fonts/icons.toml
-// 87ac20c4c8eaf3eb7d06e9309c4caf7032f45a7df2fa391f5d6c506d10bfdbae
+// f12692990a5142f3aa5a84c759b0e41dcdf4fa534167effcec6e72d4395b9a94
 use iced::Font;
 use iced::widget::{Text, text};
 
@@ -16,6 +16,10 @@ pub fn caret_up<'a>() -> Text<'a> {
 
 pub fn cog<'a>() -> Text<'a> {
     icon("\u{2699}")
+}
+
+pub fn copy<'a>() -> Text<'a> {
+    icon("\u{F0C5}")
 }
 
 pub fn edit<'a>() -> Text<'a> {
