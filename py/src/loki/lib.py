@@ -35,15 +35,19 @@ def recv_message(sock: socket.socket) -> bytes:
     return recv_exact(sock, length)
 
 
-def send_message(sock: socket.socket, msg: dict[str, Any]):
-    data = json.dumps(msg).encode()
+def send_message(sock: socket.socket, data: bytes):
     header = struct.pack("<Q", len(data))
     sock.sendall(header)
     sock.sendall(data)
 
 
+def ipc_request(sock: socket.socket, msg: dict[str, Any]):
+    data = json.dumps(msg).encode()
+    send_message(sock, data)
+
+
 def ipc_query(sock: socket.socket, msg: dict[str, Any]) -> bytes:
-    send_message(sock, msg)
+    ipc_request(sock, msg)
     return recv_message(sock)
 
 
@@ -95,7 +99,7 @@ def output(df: pl.DataFrame):
         )
 
     buf = io.BytesIO()
-    df.write_ipc_stream(buf)
+    df.write_ipc(buf)
     df_ser = buf.getvalue()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -104,9 +108,8 @@ def output(df: pl.DataFrame):
         "fn": TRANSFORM_DATAFRAME_PRODUCED_METHOD,
         "key": __LOKI_TRANSFORM_KEY__,
     }
-    send_message(sock, req)
-    header = struct.pack("<Q", len(df_ser))
-    sock.sendall(header)
-    sock.sendall(df_ser)
+    ipc_request(sock, req)
+    send_message(sock, df_ser)
+    sock.close()
 
     __LOKI_OUTPUT_PRODUCED__ = True

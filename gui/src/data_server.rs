@@ -7,6 +7,7 @@ use polars::prelude as pl;
 use polars_io::{SerReader, SerWriter};
 use std::{
     collections::HashMap,
+    io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -173,7 +174,7 @@ impl Server {
     }
 
     async fn handle_request(&mut self, mut stream: net::TcpStream) {
-        let mut reader = tokio::io::BufReader::new(&mut stream);
+        let mut reader = tokio::io::BufReader::new(stream);
         let length = reader.read_u64_le().await;
         let Ok(length) = length else {
             #[cfg(feature = "tracing")]
@@ -190,28 +191,35 @@ impl Server {
         }
 
         let request = match serde_json::from_slice(&buf) {
-            Ok(request) => request,
+            Ok(request) => {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(?request);
+
+                request
+            }
             Err(err) => {
                 #[cfg(feature = "tracing")]
                 tracing::warn!("could not parse message: {err:?}");
+
                 return;
             }
         };
 
-        #[cfg(feature = "tracing")]
-        tracing::trace!(?request);
-
         match request {
             IpcMethod::DataFrameRequest { key } => {
-                self.handle_ipc_dataframe_request(&mut stream, &key).await
+                self.handle_ipc_dataframe_request(&mut reader, &key).await
             }
             IpcMethod::DataframeProduced { key } => {
-                self.handle_ipc_dataframe_output(&mut stream, &key).await
+                self.handle_ipc_dataframe_output(&mut reader, &key).await
             }
         }
     }
 
-    async fn handle_ipc_dataframe_request(&mut self, stream: &mut net::TcpStream, key: &String) {
+    async fn handle_ipc_dataframe_request(
+        &mut self,
+        reader: &mut tokio::io::BufReader<net::TcpStream>,
+        key: &String,
+    ) {
         let Some(transform_uri) = self.transform_map.get(key) else {
             #[cfg(feature = "tracing")]
             tracing::error!("transform uri key `{key}` not found");
@@ -242,6 +250,7 @@ impl Server {
             return;
         };
 
+        let stream = reader.get_mut();
         if let Err(err) = stream.write_u64_le(buf.len() as u64).await {
             #[cfg(feature = "tracing")]
             tracing::warn!("could not write response header: {err:?}");
@@ -255,7 +264,11 @@ impl Server {
         };
     }
 
-    async fn handle_ipc_dataframe_output(&mut self, stream: &mut net::TcpStream, key: &String) {
+    async fn handle_ipc_dataframe_output(
+        &mut self,
+        reader: &mut tokio::io::BufReader<net::TcpStream>,
+        key: &String,
+    ) {
         let Some(transform_uri) = self.transform_map.get(key) else {
             #[cfg(feature = "tracing")]
             tracing::debug!("transform uri key `{key}` not found");
@@ -263,16 +276,28 @@ impl Server {
             return;
         };
 
-        // TODO: Handle read errors.
-        let len = stream.read_u64_le().await.unwrap();
+        let len = match reader.read_u64_le().await {
+            Ok(len) => len,
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                tracing::warn!("could not read dataframe length: {err:?}");
+                return;
+            }
+        };
+
         let mut buf = vec![0; len as usize];
-        let mut df_bytes = stream.read_exact(&mut buf).await.unwrap();
-        let cursor = std::io::Cursor::new(df_bytes);
-        let df = match pl::IpcStreamReader::new(cursor).finish() {
+        if let Err(err) = reader.read_exact(&mut buf).await {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("could not read dataframe payload: {err:?}");
+            return;
+        }
+
+        let cursor = io::Cursor::new(buf);
+        let df = match pl::IpcReader::new(cursor).finish() {
             Ok(df) => df,
             Err(err) => {
                 #[cfg(feature = "tracing")]
-                tracing::error!("could not read dataframe: {err:}");
+                tracing::error!("could not parse dataframe: {err}");
 
                 return;
             }
@@ -285,46 +310,6 @@ impl Server {
             })
             .await
     }
-
-    // fn parse_line_as_ipc_method(&self, line: impl AsRef<str>) -> Result<IpcMethod, InvalidRequest> {
-    //     let parts = line
-    //         .as_ref()
-    //         .split_ascii_whitespace()
-    //         .map(|part| part.trim())
-    //         .collect::<Vec<_>>();
-
-    //     if parts.len() == 0 {
-    //         return Err(InvalidRequest::Malformed("empty method".to_string()));
-    //     }
-    //     match parts[0] {
-    //         TRANSFORM_DATAFRAME_REQUEST_METHOD => {
-    //             if parts.len() != 2 {
-    //                 return Err(InvalidRequest::Malformed(format!(
-    //                     "expected 2 parts, found {}",
-    //                     parts.len()
-    //                 )));
-    //             }
-
-    //             Ok(IpcMethod::DataFrameRequest {
-    //                 key: parts[1].to_string(),
-    //             })
-    //         }
-    //         TRANSFORM_DATAFRAME_PRODUCED_METHOD => {
-    //             if parts.len() != 3 {
-    //                 return Err(InvalidRequest::Malformed(format!(
-    //                     "expected 3 parts, found {}",
-    //                     parts.len()
-    //                 )));
-    //             }
-
-    //             Ok(IpcMethod::DataframeProduced {
-    //                 key: parts[1].to_string(),
-    //                 ipc_file: PathBuf::from(parts[2]),
-    //             })
-    //         }
-    //         _ => Err(InvalidRequest::InvalidMethod),
-    //     }
-    // }
 
     fn handle_update(&mut self, update: Update) {
         #[cfg(feature = "tracing")]
