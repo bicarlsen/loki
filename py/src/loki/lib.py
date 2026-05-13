@@ -1,7 +1,9 @@
-from typing import Optional
+import io
+import json
+import struct
+from typing import Optional, Any
 import os
 import socket
-import tempfile
 import polars as pl
 
 DATASET_ENV_KEY = "LOKI_IPC_DATASET_KEY"
@@ -13,6 +15,36 @@ DATA_SERVER_PORT = 7041
 __LOKI_INTERACTIVE_MODE__: bool = False
 __LOKI_TRANSFORM_KEY__: Optional[str] = None
 __LOKI_OUTPUT_PRODUCED__: bool = False
+
+
+def recv_exact(sock: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("socket closed")
+
+        buf += chunk
+
+    return buf
+
+
+def recv_message(sock: socket.socket) -> bytes:
+    header = recv_exact(sock, 8)
+    length = struct.unpack("<Q", header)[0]
+    return recv_exact(sock, length)
+
+
+def send_message(sock: socket.socket, msg: dict[str, Any]):
+    data = json.dumps(msg).encode()
+    header = struct.pack("<Q", len(data))
+    sock.sendall(header)
+    sock.sendall(data)
+
+
+def ipc_query(sock: socket.socket, msg: dict[str, Any]) -> bytes:
+    send_message(sock, msg)
+    return recv_message(sock)
 
 
 def get_df(interactive: Optional[str] = None) -> pl.DataFrame:
@@ -37,17 +69,12 @@ def get_df(interactive: Optional[str] = None) -> pl.DataFrame:
         raise RuntimeError("can not connect to ipc")
     __LOKI_TRANSFORM_KEY__ = dataset_key
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((DATA_SERVER_HOST_ADDR, DATA_SERVER_PORT))
-    dataframe_request_msg = f"{TRANSFORM_DATAFRAME_REQUEST_METHOD} {dataset_key}\n"
-    s.sendall(dataframe_request_msg.encode())
-    ipc_dataset_file = s.recv(1024).decode()
-    try:
-        return pl.read_ipc(ipc_dataset_file)
-    except FileNotFoundError:
-        raise RuntimeError(
-            "Could not get the dataframe. Perhaps you need to add the script into your pipeline?"
-        )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((DATA_SERVER_HOST_ADDR, DATA_SERVER_PORT))
+    req = {"fn": TRANSFORM_DATAFRAME_REQUEST_METHOD, "key": dataset_key}
+    res = ipc_query(sock, req)
+    sock.close()
+    return pl.read_ipc(res)
 
 
 def output(df: pl.DataFrame):
@@ -60,21 +87,26 @@ def output(df: pl.DataFrame):
 
     if __LOKI_TRANSFORM_KEY__ is None:
         raise RuntimeError(
-            "`loki` transform key not set, must call `loki.get_df` before `loki.output`"
+            "`loki` transform key not set, must call `loki.get_df()` before `loki.output()`"
         )
     if not __LOKI_INTERACTIVE_MODE__ and __LOKI_OUTPUT_PRODUCED__:
         raise RuntimeError(
-            "Output already produced, `loki.ouput` should only be called onced"
+            "Output already produced, `loki.output()` should only be called onced"
         )
 
-    with tempfile.NamedTemporaryFile(delete_on_close=False) as f:
-        df.write_ipc(f)
+    buf = io.BytesIO()
+    df.write_ipc_stream(buf)
+    df_ser = buf.getvalue()
 
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((DATA_SERVER_HOST_ADDR, DATA_SERVER_PORT))
-        dataframe_produced_msg = (
-            f"{TRANSFORM_DATAFRAME_PRODUCED_METHOD} {__LOKI_TRANSFORM_KEY__} {f.name}\n"
-        )
-        s.sendall(dataframe_produced_msg.encode())
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((DATA_SERVER_HOST_ADDR, DATA_SERVER_PORT))
+    req = {
+        "fn": TRANSFORM_DATAFRAME_PRODUCED_METHOD,
+        "key": __LOKI_TRANSFORM_KEY__,
+    }
+    send_message(sock, req)
+    header = struct.pack("<Q", len(df_ser))
+    sock.sendall(header)
+    sock.sendall(df_ser)
 
     __LOKI_OUTPUT_PRODUCED__ = True

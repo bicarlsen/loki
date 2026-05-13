@@ -849,9 +849,10 @@ mod tracing {
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
     pub fn enable() {
+        let env_filter = EnvFilter::try_from_default_env().unwrap();
         tracing_subscriber::registry()
             .with(fmt::layer())
-            .with(EnvFilter::from_default_env())
+            .with(env_filter)
             .init();
     }
 }

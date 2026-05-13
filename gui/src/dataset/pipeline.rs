@@ -2,7 +2,6 @@
 
 use iced::widget;
 use polars::prelude as pl;
-use polars_io::SerWriter;
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -221,40 +220,19 @@ impl Pipeline {
     ) -> Action {
         let mut tx = tx.lock().expect("could not get ipc response channel");
         let tx = tx.take().expect("ipc response channel already taken");
-        let mut ipc_file = match tempfile::NamedTempFile::new() {
-            Ok(file) => file,
-            Err(err) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("could not create ipc file: {err:?}");
-
-                tx.send(Err(err.into()))
-                    .expect("could not send ipc response");
-                return Action::None;
-            }
-        };
-        let mut writer = pl::IpcWriter::new(ipc_file.as_file_mut());
 
         let idx = self
             .transform_position(transform)
             .expect("transform should exist");
         let df = if idx == 0 {
-            &mut self.raw
+            self.raw.clone()
         } else if let Some(df) = self.cache.get_mut(&transform) {
-            df
+            df.clone()
         } else {
             todo!("recalculate dataframe")
         };
 
-        if let Err(err) = writer.finish(df) {
-            #[cfg(feature = "tracing")]
-            tracing::error!("could not write dataframe to ipc file: {err:?}");
-
-            tx.send(Err(err.into()))
-                .expect("could not send ipc response");
-            return Action::None;
-        }
-
-        tx.send(Ok(ipc_file)).expect("could not send ipc response");
+        tx.send(df).expect("could not send ipc response");
         Action::None
     }
 
