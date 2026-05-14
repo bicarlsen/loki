@@ -6,6 +6,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
+    time,
 };
 
 use crate::icon;
@@ -73,7 +74,7 @@ impl<'a> iced::advanced::text::IntoFragment<'a> for &'a TransformKind {
     fn into_fragment(self) -> widget::text::Fragment<'a> {
         match self {
             TransformKind::Script { file, runner: _ } => Cow::Owned(format!(
-                "Script ({})",
+                "{}",
                 file.file_name()
                     .expect("file name should exist")
                     .to_string_lossy()
@@ -166,21 +167,27 @@ impl Pipeline {
     ) -> iced::Element<'_, Message> {
         match &transform.kind {
             TransformKind::Script { file, .. } => {
-                let btn_main = widget::button("Script").on_press(Message::SetActiveLayer(id));
+                let btn_main =
+                    widget::button(widget::text(transform)).on_press(Message::SetActiveLayer(id));
                 let tt_main = widget::tooltip(
                     btn_main,
-                    widget::text(file.to_string_lossy().to_owned()),
+                    widget::container(widget::text(file.to_string_lossy().to_owned())).style(
+                        |theme: &iced::Theme| {
+                            widget::container::background(theme.palette().background)
+                        },
+                    ),
                     widget::tooltip::Position::Top,
                 )
-                .delay(std::time::Duration::from_millis(300));
+                .delay(crate::TOOLTIP_DELAY);
 
                 let key = crate::data_server::TransformUri::key_of(&dataset, transform.id);
                 let btn_key =
                     widget::button(icon::copy()).on_press(Message::CopyToClipboard(key.clone()));
                 let tt_key =
-                    widget::tooltip(btn_key, widget::text(key), widget::tooltip::Position::Top);
+                    widget::tooltip(btn_key, widget::text(key), widget::tooltip::Position::Top)
+                        .delay(crate::TOOLTIP_DELAY);
 
-                widget::column![tt_main, tt_key].into()
+                widget::row![tt_main, tt_key].into()
             }
         }
     }
@@ -196,9 +203,7 @@ impl Pipeline {
 
                 todo!("set active layer");
             }
-            Message::CopyToClipboard(contents) => {
-                Action::Run(iced::clipboard::write_primary(contents))
-            }
+            Message::CopyToClipboard(contents) => Action::Run(iced::clipboard::write(contents)),
             Message::PromptTransformScript => self.prompt_new_transform_script(),
             Message::PushTransformScript(path) => {
                 let id = self.push(TransformKind::Script {

@@ -326,7 +326,7 @@ impl Dataset {
 
     pub fn view(
         &self,
-        theme: &iced::advanced::graphics::core::Theme,
+        theme: &iced::Theme,
         window: &iced::window::Id,
     ) -> iced::Element<'_, Message> {
         if self.window_id == *window {

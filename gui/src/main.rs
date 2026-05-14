@@ -5,6 +5,7 @@ use polars::prelude as pl;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    time,
 };
 
 mod data_server;
@@ -12,6 +13,8 @@ mod dataset;
 mod icon;
 mod settings;
 mod workspace;
+
+const TOOLTIP_DELAY: time::Duration = time::Duration::from_millis(300);
 
 fn main() -> iced::Result {
     #[cfg(feature = "tracing")]
