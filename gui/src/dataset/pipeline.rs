@@ -148,7 +148,9 @@ impl Pipeline {
         let controls_r1 = widget::row![btn_ctrl_add_script];
         let controls = widget::column![controls_r1];
 
-        let raw = widget::button("raw").on_press(Message::SetActiveLayer(0));
+        let raw = widget::button("Raw")
+            .on_press(Message::SetActiveLayer(0))
+            .style(Self::btn_style);
         let stages = std::iter::once(raw.into())
             .chain(self.transforms.iter().enumerate().map(|(idx, transform)| {
                 Self::view_transform_layer(1 + idx as TransformId, transform, &dataset)
@@ -167,8 +169,9 @@ impl Pipeline {
     ) -> iced::Element<'_, Message> {
         match &transform.kind {
             TransformKind::Script { file, .. } => {
-                let btn_main =
-                    widget::button(widget::text(transform)).on_press(Message::SetActiveLayer(id));
+                let btn_main = widget::button(widget::text(transform))
+                    .on_press(Message::SetActiveLayer(id))
+                    .style(Self::btn_style);
                 let tt_main = widget::tooltip(
                     btn_main,
                     widget::container(widget::text(file.to_string_lossy().to_owned())).style(
@@ -181,13 +184,39 @@ impl Pipeline {
                 .delay(crate::TOOLTIP_DELAY);
 
                 let key = crate::data_server::TransformUri::key_of(&dataset, transform.id);
-                let btn_key =
-                    widget::button(icon::copy()).on_press(Message::CopyToClipboard(key.clone()));
+                let btn_key = widget::button(icon::copy())
+                    .on_press(Message::CopyToClipboard(key.clone()))
+                    .style(Self::btn_style);
                 let tt_key =
                     widget::tooltip(btn_key, widget::text(key), widget::tooltip::Position::Top)
                         .delay(crate::TOOLTIP_DELAY);
 
                 widget::row![tt_main, tt_key].into()
+            }
+        }
+    }
+
+    fn btn_style(theme: &iced::Theme, status: widget::button::Status) -> widget::button::Style {
+        let text_color = if theme.extended_palette().is_dark {
+            iced::Color::WHITE
+        } else {
+            iced::Color::BLACK
+        };
+
+        match status {
+            widget::button::Status::Hovered | widget::button::Status::Pressed => {
+                widget::button::Style {
+                    background: Some(theme.palette().background.into()),
+                    text_color,
+                    ..Default::default()
+                }
+            }
+            widget::button::Status::Active | widget::button::Status::Disabled => {
+                widget::button::Style {
+                    background: None,
+                    text_color,
+                    ..Default::default()
+                }
             }
         }
     }
