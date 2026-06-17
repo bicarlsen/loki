@@ -99,7 +99,6 @@ pub struct Dataset {
     path: PathBuf,
     label: Option<String>,
     data: DatasetState,
-    kind: Option<jpk::dataset::DatasetType>,
     window: Option<iced::window::Id>,
     children: DatasetChildren,
 }
@@ -346,14 +345,13 @@ impl Workspace {
                 path,
                 label: None,
                 data: DatasetState::Loading,
-                kind: None,
                 window: None,
                 children: Default::default(),
             });
         }
     }
 
-    pub fn dataset_loaded(&mut self, path: PathBuf, kind: jpk::dataset::DatasetType) {
+    pub fn dataset_loaded(&mut self, path: PathBuf) {
         let dataset = self
             .datasets
             .iter_mut()
@@ -361,7 +359,6 @@ impl Workspace {
             .expect("dataset loaded, but doesn't exist");
 
         dataset.data = DatasetState::Ok;
-        let _ = dataset.kind.insert(kind);
     }
 
     fn insert_dataset_window(&mut self, path: PathBuf, window: iced::window::Id) {

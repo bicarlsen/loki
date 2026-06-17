@@ -4,6 +4,7 @@ use jpk_reader as jpk;
 use polars::prelude as pl;
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
     time,
 };
@@ -11,6 +12,7 @@ use std::{
 mod data_server;
 mod dataset;
 mod icon;
+mod reader;
 mod settings;
 mod workspace;
 
@@ -56,7 +58,7 @@ enum Message {
     /// A dataset loaded successfully.
     DatasetLoaded {
         path: PathBuf,
-        reader: dataset::Reader,
+        reader: reader::Reader,
         df: pl::DataFrame,
     },
     /// An error occurred while loading a dataframe.
@@ -472,7 +474,7 @@ impl App {
 
     fn try_load_dataset<L>(&mut self, path: impl Into<PathBuf>, loader: L) -> iced::Task<Message>
     where
-        L: FnOnce(PathBuf) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset>
+        L: FnOnce(PathBuf) -> Result<(reader::Reader, pl::DataFrame), error::OpenDataset>
             + Send
             + 'static,
     {
@@ -516,53 +518,84 @@ impl App {
 
     fn load_dataset_file(
         path: impl AsRef<Path>,
-    ) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset> {
-        let Some(dataset_type) = jpk::dataset::DatasetType::from_fs(&path)? else {
-            return Err(error::OpenDataset::UnknownDatasetType);
-        };
-
-        match dataset_type {
-            jpk::dataset::DatasetType::VoltageSpectroscopy => {
-                let mut reader = jpk::voltage_spectroscopy::v2_0::FileReader::new(path.as_ref())?;
-                let df = reader.load_data_all()?;
-                Ok((reader.into(), df))
+    ) -> Result<(reader::Reader, pl::DataFrame), error::OpenDataset> {
+        match jpk::dataset::DatasetType::from_fs(&path) {
+            Ok(Some(dataset_type)) => match dataset_type {
+                jpk::dataset::DatasetType::VoltageSpectroscopy => {
+                    let mut reader =
+                        jpk::voltage_spectroscopy::v2_0::FileReader::new(path.as_ref())?;
+                    let df = reader.load_data()?;
+                    return Ok((reader::Reader::JpkVoltageSpectroscopy(reader.into()), df));
+                }
+                jpk::dataset::DatasetType::QIMap => todo!(),
+                jpk::dataset::DatasetType::VoltageSpectroscopyCollection => {
+                    panic!("file should not be identified as a dataset collection type")
+                }
+            },
+            Ok(None) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::debug!("file not readable as jpk");
             }
-            jpk::dataset::DatasetType::QIMap => todo!(),
-            jpk::dataset::DatasetType::VoltageSpectroscopyCollection => {
-                panic!("file should not be identified as a dataset collection type")
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::debug!(?err);
             }
         }
+
+        return Err(error::OpenDataset::UnknownDatasetType);
     }
 
     fn load_dataset_dir(
         path: impl AsRef<Path>,
-    ) -> Result<(dataset::Reader, pl::DataFrame), error::OpenDataset> {
-        let Some(dataset_type) = jpk::dataset::DatasetType::from_fs(&path)? else {
-            return Err(error::OpenDataset::UnknownDatasetType);
-        };
+    ) -> Result<(reader::Reader, pl::DataFrame), error::OpenDataset> {
+        match jpk::dataset::DatasetType::from_fs(&path) {
+            Ok(Some(dataset_type)) => match dataset_type {
+                jpk_reader::dataset::DatasetType::VoltageSpectroscopyCollection => {
+                    let dir_walker = fs::read_dir(&path).unwrap();
+                    let paths = dir_walker
+                        .into_iter()
+                        .filter_map(|entry| entry.ok())
+                        .filter_map(|entry| {
+                            let path = entry.path();
+                            let ext = path.extension()?.to_str()?;
+                            (path.is_file() && ext == jpk_reader::voltage_spectroscopy::VOLTAGE_SPECTROSCOPY_FILE_EXT).then_some(path)
+                        })
+                        .collect::<Vec<_>>();
 
-        match dataset_type {
-            jpk_reader::dataset::DatasetType::VoltageSpectroscopyCollection => {
-                let reader = jpk::voltage_spectroscopy::v2_0::DirReader::new(path.as_ref());
-                let df = reader.load_data_all()?;
-                Ok((reader.into(), df))
+                    let mut reader = jpk::voltage_spectroscopy::v2_0::DirReader::new(paths)?;
+                    let df = reader.load_data()?;
+                    return Ok((
+                        reader::Reader::JpkVoltageSpectroscopyCollection(reader.into()),
+                        df,
+                    ));
+                }
+                jpk_reader::dataset::DatasetType::VoltageSpectroscopy
+                | jpk_reader::dataset::DatasetType::QIMap => {
+                    panic!("directory should not be identified as single dataset type")
+                }
+            },
+            Ok(None) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::debug!("directory not readable as jpk");
             }
-            jpk_reader::dataset::DatasetType::VoltageSpectroscopy
-            | jpk_reader::dataset::DatasetType::QIMap => {
-                panic!("directory should not be identified as single dataset type")
+            Err(err) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::debug!(?err);
             }
         }
+
+        return Err(error::OpenDataset::UnknownDatasetType);
     }
 
     fn open_dataset(
         &mut self,
         path: impl Into<PathBuf>,
-        reader: dataset::Reader,
+        reader: reader::Reader,
         df: pl::DataFrame,
     ) -> iced::Task<Message> {
         let path = path.into();
         let (dataset, open) = dataset::Dataset::new(path.clone(), reader, df);
-        self.workspace.dataset_loaded(path.clone(), dataset.kind());
+        self.workspace.dataset_loaded(path.clone());
         self.datasets.insert(path.clone(), dataset);
 
         open.then(move |window| {
@@ -852,7 +885,7 @@ mod tracing {
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
     pub fn enable() {
-        let env_filter = EnvFilter::try_from_default_env().unwrap();
+        let env_filter = EnvFilter::try_from_default_env().unwrap_or(EnvFilter::default());
         tracing_subscriber::registry()
             .with(fmt::layer())
             .with(env_filter)

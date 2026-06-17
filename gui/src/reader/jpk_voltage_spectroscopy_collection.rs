@@ -1,5 +1,7 @@
 //! Element for a voltage spectroscopy dataset collection (multiple `.jpk-voltage-ramp`).
-use super::plot::heatmap;
+use std::{fs, path::PathBuf};
+
+use crate::dataset::plot;
 use polars::prelude::{self as pl, *};
 
 const DEFAULT_X_COL: &str = "x";
@@ -9,53 +11,49 @@ const DEFAULT_SEGMENT_COL: &str = "segment";
 const DEFAULT_COLOR_COL: &str = "ff_rel";
 // TODO: expected columns, with validation
 
-pub struct State {
-    df: pl::DataFrame,
-    color_col: &'static str,
+#[derive(derive_more::Deref, derive_more::From)]
+pub struct Reader {
+    inner: jpk_reader::voltage_spectroscopy::v2_0::DirReader,
 }
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    SetColorCol(&'static str),
-}
+impl Reader {
+    fn new(
+        path: PathBuf,
+    ) -> Result<
+        Self,
+        jpk_reader::dataset::error::Error<
+            jpk_reader::voltage_spectroscopy::v2_0::error::DataCollection,
+        >,
+    > {
+        let dir_walker = fs::read_dir(&path).unwrap();
+        let paths = dir_walker
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                let ext = path.extension()?.to_str()?;
+                (path.is_file()
+                    && ext == jpk_reader::voltage_spectroscopy::VOLTAGE_SPECTROSCOPY_FILE_EXT)
+                    .then_some(path)
+            })
+            .collect::<Vec<_>>();
 
-pub enum Action {
-    None,
-}
-
-impl State {
-    pub fn new(df: std::sync::Arc<std::sync::RwLock<pl::DataFrame>>) -> Self {
-        let df = photodiode_fit(&df.read().expect("dataframe should be readable"));
-        let df = df.select(["x", "y", "ff"]).unwrap();
-        let df = df
-            .lazy()
-            .with_column((pl::col("ff") / pl::col("ff").max()).alias("ff_rel"))
-            .collect()
-            .unwrap();
-
-        Self { df, color_col: "" }
+        let inner = jpk_reader::voltage_spectroscopy::v2_0::DirReader::new(paths)?;
+        Ok(Self { inner })
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
-        todo!()
-    }
-
-    pub fn view(&self) -> iced::Element<'_, Message> {
-        todo!()
-    }
-
-    pub fn default_options() -> heatmap::Options {
-        let x = heatmap::axis::Axis::new(super::plot::axis::IndexValues::Series(
+    pub fn default_options() -> plot::heatmap::Options {
+        let x = plot::heatmap::axis::Axis::new(plot::axis::IndexValues::Series(
             DEFAULT_X_COL.to_string(),
         ));
-        let y = heatmap::axis::Axis::new(super::plot::axis::IndexValues::Series(
+        let y = plot::heatmap::axis::Axis::new(plot::axis::IndexValues::Series(
             DEFAULT_Y_COL.to_string(),
         ));
-        let z = heatmap::axis::Axis::new(super::plot::axis::IndexValues::Series(
+        let z = plot::heatmap::axis::Axis::new(plot::axis::IndexValues::Series(
             DEFAULT_Z_COL.to_string(),
         ));
 
-        heatmap::Options::new(heatmap::Index::new(x, y, z))
+        plot::heatmap::Options::new(plot::heatmap::Index::new(x, y, z))
     }
 }
 

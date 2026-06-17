@@ -6,7 +6,19 @@ edition = "2024"
 [dependencies]
 approx.workspace = true
 derive_more = { workspace = true, features = ["from", "debug"] }
-iced = { version = "0.14.0", features = ["advanced", "sipper", "tokio"] }
+# `iced`: Removed `wgpu` default feature because it was causing compilation errors on Windows.
+iced = { version = "0.14.0", default-features = false, features = [
+    "crisp",
+    "linux-theme-detection",
+    "thread-pool",
+    "tiny-skia",
+    "wayland",
+    "web-colors",
+    "x11",
+    "advanced",
+    "sipper",
+    "tokio",
+] }
 # iced_aw = { version = "0.13.0", default-features = false, features = ["menu"] }
 iced_aw = { git = "https://github.com/iced-rs/iced_aw", default-features = false, features = [
     "menu",

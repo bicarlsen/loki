@@ -1,16 +1,16 @@
 //! Dataset.
-use crate::icon;
+use crate::{
+    icon,
+    reader::{self, Reader},
+};
 use iced::widget;
-use jpk_reader as jpk;
 use polars::prelude as pl;
 use std::{borrow::Cow, path::PathBuf};
 
 mod data_table;
 pub mod pipeline;
-mod plot;
+pub mod plot;
 mod settings;
-mod voltage_spectroscopy;
-mod voltage_spectroscopy_collection;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ChildWindowType {
@@ -53,10 +53,6 @@ pub enum Message {
     DataTable(data_table::Message),
     #[from]
     Pipeline(pipeline::Message),
-    #[from]
-    VoltageSpectroscopy(voltage_spectroscopy::Message),
-    #[from]
-    VoltageSpectroscopyCollection(voltage_spectroscopy_collection::Message),
 }
 
 pub enum Action {
@@ -72,17 +68,11 @@ pub enum Action {
     },
 }
 
-#[derive(derive_more::Debug, derive_more::From)]
-pub enum Reader {
-    VoltageSpectroscopy(#[debug(skip)] jpk::voltage_spectroscopy::v2_0::FileReader),
-    VoltageSpectroscopyCollection(#[debug(skip)] jpk::voltage_spectroscopy::v2_0::DirReader),
-}
-
-#[derive(derive_more::From)]
-enum DatasetKind {
-    VoltageSpectroscopy(voltage_spectroscopy::State),
-    VoltageSpectroscopyCollection(voltage_spectroscopy_collection::State),
-}
+// #[derive(derive_more::From)]
+// enum DatasetKind {
+//     VoltageSpectroscopy(voltage_spectroscopy::State),
+//     VoltageSpectroscopyCollection(voltage_spectroscopy_collection::State),
+// }
 
 #[derive(Default, Debug)]
 pub struct Children {
@@ -98,9 +88,8 @@ pub struct Dataset {
     path: PathBuf,
     window_id: iced::window::Id,
     df: SharedDataframe,
-    reader: Reader,
+    reader: crate::reader::Reader,
     pipeline: pipeline::Pipeline,
-    state: DatasetKind,
     plot: plot::State,
     children: Children,
 }
@@ -108,15 +97,6 @@ pub struct Dataset {
 impl Dataset {
     pub fn path(&self) -> &PathBuf {
         &self.path
-    }
-
-    pub fn kind(&self) -> jpk::dataset::DatasetType {
-        match &self.reader {
-            Reader::VoltageSpectroscopy(_) => jpk::dataset::DatasetType::VoltageSpectroscopy,
-            Reader::VoltageSpectroscopyCollection(_) => {
-                jpk::dataset::DatasetType::VoltageSpectroscopyCollection
-            }
-        }
     }
 
     pub fn window_id(&self) -> &iced::window::Id {
@@ -138,20 +118,20 @@ impl Dataset {
     ) -> (Self, iced::Task<iced::window::Id>) {
         let df_pipeline = df.clone();
         let df = std::sync::Arc::new(std::sync::RwLock::new(df));
-        let (state, plot) = match &reader {
-            Reader::VoltageSpectroscopy(_) => {
-                let state = voltage_spectroscopy::State::new();
-                let plot =
-                    plot::State::new(df.clone(), voltage_spectroscopy::State::default_options());
-                (state.into(), plot.into())
-            }
-            Reader::VoltageSpectroscopyCollection(_) => {
-                let state = voltage_spectroscopy_collection::State::new(df.clone());
+        let plot = match &reader {
+            Reader::JpkVoltageSpectroscopy(_) => {
                 let plot = plot::State::new(
                     df.clone(),
-                    voltage_spectroscopy_collection::State::default_options(),
+                    reader::jpk_voltage_spectroscopy::Reader::default_options(),
                 );
-                (state.into(), plot.into())
+                plot.into()
+            }
+            Reader::JpkVoltageSpectroscopyCollection(_) => {
+                let plot = plot::State::new(
+                    df.clone(),
+                    reader::jpk_voltage_spectroscopy_collection::Reader::default_options(),
+                );
+                plot.into()
             }
         };
 
@@ -163,8 +143,7 @@ impl Dataset {
                 df,
                 reader,
                 pipeline: pipeline::Pipeline::new(df_pipeline),
-                state,
-                plot: plot,
+                plot,
                 children: Children::default(),
             },
             open,
@@ -303,24 +282,6 @@ impl Dataset {
                 }
             }
             Message::Pipeline(message) => self.pipeline_update(message),
-            Message::VoltageSpectroscopy(message) => {
-                let DatasetKind::VoltageSpectroscopy(state) = &mut self.state else {
-                    panic!("invalid message state")
-                };
-
-                match state.update(message) {
-                    voltage_spectroscopy::Action::None => Action::None,
-                }
-            }
-            Message::VoltageSpectroscopyCollection(message) => {
-                let DatasetKind::VoltageSpectroscopyCollection(state) = &mut self.state else {
-                    panic!("invalid message state")
-                };
-
-                match state.update(message) {
-                    voltage_spectroscopy_collection::Action::None => Action::None,
-                }
-            }
         }
     }
 

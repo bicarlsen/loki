@@ -2,7 +2,6 @@
 // TODO: Reset button to reset plot scaling and panning.
 
 use super::SharedDataframe;
-use polars::prelude as pl;
 
 pub mod heatmap;
 pub mod scatter;
