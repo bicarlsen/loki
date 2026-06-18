@@ -25,6 +25,7 @@ fn main() -> iced::Result {
     iced::daemon(App::new, App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
+        .title(App::window_title)
         .run()
 }
 
@@ -95,6 +96,37 @@ impl App {
     // TODO: Allow per window theming for datasets.
     pub fn theme(&self, _window: iced::window::Id) -> iced::Theme {
         self.settings.theme.clone()
+    }
+
+    /// Set the title of windows.
+    pub fn window_title(state: &Self, window: iced::window::Id) -> String {
+        let Some(window) = state.windows.get(&window) else {
+            return "loki".into();
+        };
+
+        match window {
+            WindowKind::Workspace => "loki".into(),
+            WindowKind::AppSettings => "settings".into(),
+            WindowKind::Dataset(path) => {
+                shortest_unique_suffix(&path, state.datasets.keys().collect())
+                    .to_string_lossy()
+                    .to_string()
+            }
+            WindowKind::DatasetChild { dataset, kind } => {
+                let key = shortest_unique_suffix(dataset, state.datasets.keys().collect())
+                    .to_string_lossy()
+                    .to_string();
+
+                let title = match kind {
+                    dataset::ChildWindowType::Settings => "settings",
+                    dataset::ChildWindowType::DataTable => "data table",
+                    dataset::ChildWindowType::Pipeline => "pipeline",
+                    dataset::ChildWindowType::FileBrowser => "file browser",
+                };
+
+                format!("{key} | {title}")
+            }
+        }
     }
 }
 
@@ -891,4 +923,48 @@ mod tracing {
             .with(env_filter)
             .init();
     }
+}
+
+/// # Returns
+/// Shortest unique suffix of `needle` as compared with `haystack`.
+/// If `needle` is in `haystack` it is ignored.
+///
+/// # Examples
+/// ```
+/// fn shortest_unique_suffix_test() {
+///     let target = PathBuf::from("/a/b/c/d");
+///     let h1 = PathBuf::from("/a/b/c/e");
+///     let h2 = PathBuf::from("/x/y/z/d");
+///     let haystack = vec![&h1, &h2];
+///     let shortest = shortest_unique_suffix(target, haystack);
+///     assert_eq!(shortest, PathBuf::from("c/d"))
+/// }
+/// ```
+fn shortest_unique_suffix(needle: impl AsRef<Path>, haystack: Vec<&PathBuf>) -> PathBuf {
+    let mut haystack = haystack
+        .iter()
+        .filter(|&&path| path != needle.as_ref())
+        .map(|path| path.components().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let mut needle = needle.as_ref().components().rev();
+    let mut shortest = Vec::with_capacity(32);
+    while let Some(comp) = needle.next() {
+        haystack = haystack
+            .into_iter()
+            .filter_map(|mut path| {
+                if let Some(pcomp) = path.pop() {
+                    (pcomp == comp).then_some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        shortest.push(comp);
+        if haystack.len() == 0 {
+            break;
+        }
+    }
+
+    shortest.into_iter().rev().collect()
 }
