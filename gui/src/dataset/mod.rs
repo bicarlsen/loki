@@ -1,5 +1,6 @@
 //! Dataset.
 use crate::{
+    dataset::plot::{datacube, heatmap, scatter},
     icon,
     reader::{self, Reader},
 };
@@ -163,7 +164,9 @@ impl Dataset {
             }
             Message::SettingsOpened(id) => {
                 assert!(self.children.settings.is_none(), "settings already exist");
-                let settings = settings::Settings::new();
+
+                let mode = self.plot.mode().into();
+                let settings = settings::Settings::new(mode);
                 self.children.settings = Some((id.clone(), settings));
                 Action::ChildWindowOpened {
                     window: id.clone(),
@@ -258,20 +261,7 @@ impl Dataset {
                     }
                 }
             },
-            Message::Settings(message) => {
-                if let settings::Message::SetMode(mode) = &message {
-                    // self.plot.mode(mode);
-                    todo!()
-                }
-
-                if let Some((_, settings)) = self.children.settings.as_mut() {
-                    match settings.update(message) {
-                        settings::Action::None => Action::None,
-                    }
-                } else {
-                    Action::None
-                }
-            }
+            Message::Settings(message) => self.update_settings(message),
             Message::DataTable(message) => {
                 if let Some((_, data_table)) = self.children.data_table.as_mut() {
                     match data_table.update(message) {
@@ -283,6 +273,74 @@ impl Dataset {
             }
             Message::Pipeline(message) => self.pipeline_update(message),
         }
+    }
+
+    fn update_settings(&mut self, message: settings::Message) -> Action {
+        if let Some((_, settings)) = self.children.settings.as_mut() {
+            match settings.update(message.clone()) {
+                settings::Action::None => {}
+            }
+        }
+
+        match message {
+            settings::Message::SetMode(mode) => {
+                let options = match (self.plot.mode(), mode) {
+                    (plot::mode::Mode::Scatter(_), plot::mode::Kind::Scatter)
+                    | (plot::mode::Mode::Heatmap(_), plot::mode::Kind::Heatmap)
+                    | (plot::mode::Mode::Datacube(_), plot::mode::Kind::Datacube) => None,
+
+                    (plot::mode::Mode::Scatter(state), plot::mode::Kind::Heatmap) => {
+                        let idx = state.index();
+                        let y_axis = idx.y();
+                        let y = if y_axis.is_empty() {
+                            Default::default()
+                        } else {
+                            y_axis[0].clone().into()
+                        };
+
+                        let options = heatmap::Options::new(heatmap::Index::new(
+                            idx.x().clone().into(),
+                            y,
+                            Default::default(),
+                        ));
+                        Some(plot::mode::Options::Heatmap(options))
+                    }
+                    (plot::mode::Mode::Scatter(state), plot::mode::Kind::Datacube) => {
+                        Some(plot::mode::Options::Datacube(datacube::Options::new(
+                            datacube::Index::D1(Default::default()),
+                        )))
+                    }
+
+                    (plot::mode::Mode::Heatmap(state), plot::mode::Kind::Scatter) => Some(
+                        plot::mode::Options::Scatter(scatter::Options::new(Default::default())),
+                    ),
+                    (plot::mode::Mode::Heatmap(state), plot::mode::Kind::Datacube) => {
+                        Some(plot::mode::Options::Datacube(datacube::Options::new(
+                            datacube::Index::D2 {
+                                x: Default::default(),
+                                y: Default::default(),
+                            },
+                        )))
+                    }
+
+                    (plot::mode::Mode::Datacube(state), plot::mode::Kind::Scatter) => Some(
+                        plot::mode::Options::Scatter(scatter::Options::new(Default::default())),
+                    ),
+                    (plot::mode::Mode::Datacube(state), plot::mode::Kind::Heatmap) => {
+                        Some(plot::mode::Options::Heatmap(Default::default()))
+                    }
+                };
+
+                if let Some(options) = options {
+                    match self.plot.update(plot::Message::SetMode(options)) {
+                        plot::Action::None => {}
+                        plot::Action::DataHovered(_) => todo!(),
+                    }
+                }
+            }
+        }
+
+        Action::None
     }
 
     pub fn view(

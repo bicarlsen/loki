@@ -3,6 +3,7 @@
 
 use super::SharedDataframe;
 
+pub mod datacube;
 pub mod heatmap;
 pub mod scatter;
 
@@ -25,6 +26,12 @@ impl From<heatmap::Message> for Message {
     }
 }
 
+impl From<datacube::Message> for Message {
+    fn from(value: datacube::Message) -> Self {
+        Self::Mode(value.into())
+    }
+}
+
 pub enum Action {
     None,
     DataHovered(Option<usize>),
@@ -40,9 +47,14 @@ impl State {
         let mode = match options {
             mode::Options::Scatter(options) => scatter::State::new(df, options).into(),
             mode::Options::Heatmap(options) => heatmap::State::new(df, options).into(),
+            mode::Options::Datacube(options) => datacube::State::new(df, options).into(),
         };
 
         Self { mode }
+    }
+
+    pub fn mode(&self) -> &mode::Mode {
+        &self.mode
     }
 }
 
@@ -50,7 +62,7 @@ impl State {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::DataframeChange => self.dataframe_change(),
-            Message::SetMode(mode) => todo!("{mode:?}"),
+            Message::SetMode(mode) => self.update_set_mode(mode),
             Message::Mode(message) => match message {
                 mode::Message::Scatter(message) => {
                     let mode::Mode::Scatter(state) = &mut self.mode else {
@@ -72,6 +84,15 @@ impl State {
                         heatmap::Action::DataHovered(idx) => Action::DataHovered(idx),
                     }
                 }
+                mode::Message::Datacube(message) => {
+                    let mode::Mode::Datacube(state) = &mut self.mode else {
+                        panic!("invalid message for state");
+                    };
+
+                    match state.update(message) {
+                        datacube::Action::None => Action::None,
+                    }
+                }
             },
         }
     }
@@ -87,7 +108,41 @@ impl State {
                 );
                 Action::None
             }
+            mode::Mode::Datacube(state) => {
+                todo!()
+            }
         }
+    }
+
+    fn update_set_mode(&mut self, mode: mode::Options) -> Action {
+        match (&self.mode, mode) {
+            (mode::Mode::Scatter(_), mode::Options::Scatter(_))
+            | (mode::Mode::Heatmap(_), mode::Options::Heatmap(_))
+            | (mode::Mode::Datacube(_), mode::Options::Datacube(_)) => {}
+
+            (mode::Mode::Heatmap(state), mode::Options::Scatter(options)) => {
+                self.mode = mode::Mode::Scatter(scatter::State::new(state.df(), options))
+            }
+            (mode::Mode::Datacube(state), mode::Options::Scatter(options)) => {
+                self.mode = mode::Mode::Scatter(scatter::State::new(state.df(), options))
+            }
+
+            (mode::Mode::Scatter(state), mode::Options::Heatmap(options)) => {
+                self.mode = mode::Mode::Heatmap(heatmap::State::new(state.df(), options))
+            }
+            (mode::Mode::Datacube(state), mode::Options::Heatmap(options)) => {
+                self.mode = mode::Mode::Heatmap(heatmap::State::new(state.df(), options))
+            }
+
+            (mode::Mode::Scatter(state), mode::Options::Datacube(options)) => {
+                self.mode = mode::Mode::Datacube(datacube::State::new(state.df(), options))
+            }
+            (mode::Mode::Heatmap(state), mode::Options::Datacube(options)) => {
+                self.mode = mode::Mode::Datacube(datacube::State::new(state.df(), options))
+            }
+        }
+
+        Action::None
     }
 }
 
@@ -96,6 +151,7 @@ impl State {
         match &self.mode {
             mode::Mode::Scatter(state) => state.view().map(Into::into),
             mode::Mode::Heatmap(state) => state.view().map(Into::into),
+            mode::Mode::Datacube(state) => state.view().map(Into::into),
         }
     }
 }
@@ -141,12 +197,14 @@ pub mod axis {
 }
 
 pub mod mode {
-    use super::{heatmap, scatter};
+    use super::{datacube, heatmap, scatter};
+    use std::fmt::Display;
 
     #[derive(Debug, Clone, derive_more::From)]
     pub enum Message {
         Scatter(scatter::Message),
         Heatmap(heatmap::Message),
+        Datacube(datacube::Message),
     }
     #[derive(PartialEq, Eq, Default, Debug, Clone, Copy)]
     #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
@@ -154,14 +212,26 @@ pub mod mode {
         #[default]
         Scatter,
         Heatmap,
+        Datacube,
     }
 
-    impl ToString for Kind {
-        fn to_string(&self) -> String {
-            match self {
-                Kind::Scatter => "Scatter".to_string(),
-                Kind::Heatmap => "Heatmap".to_string(),
+    impl From<&Mode> for Kind {
+        fn from(value: &Mode) -> Self {
+            match value {
+                Mode::Scatter(_) => Self::Scatter,
+                Mode::Heatmap(_) => Self::Heatmap,
+                Mode::Datacube(_) => Self::Datacube,
             }
+        }
+    }
+
+    impl Display for Kind {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(match self {
+                Kind::Scatter => "Scatter",
+                Kind::Heatmap => "Heatmap",
+                Kind::Datacube => "Datacube",
+            })
         }
     }
 
@@ -169,14 +239,17 @@ pub mod mode {
     pub enum Options {
         Scatter(scatter::Options),
         Heatmap(heatmap::Options),
+        Datacube(datacube::Options),
     }
 
     #[derive(derive_more::Debug, derive_more::From)]
-    pub(super) enum Mode {
+    pub enum Mode {
         #[debug("Scatter")]
         Scatter(scatter::State),
         #[debug("Heatmap")]
         Heatmap(heatmap::State),
+        #[debug("Datacube")]
+        Datacube(datacube::State),
     }
 }
 

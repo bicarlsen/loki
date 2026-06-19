@@ -53,6 +53,14 @@ impl Index {
     pub fn new(x: axis::IndexAxis, y: Vec<axis::ValueAxis>) -> Self {
         Self { x, y }
     }
+
+    pub fn x(&self) -> &axis::IndexAxis {
+        &self.x
+    }
+
+    pub fn y(&self) -> &Vec<axis::ValueAxis> {
+        &self.y
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +96,7 @@ pub enum Action {
     DataHovered(Option<usize>),
 }
 
-pub(super) struct State {
+pub struct State {
     chart: aksel::State<&'static str, chart::ValueType>,
     data: aksel::Cached<data::State>,
     options: Options,
@@ -154,6 +162,16 @@ impl State {
         .into()
     }
 
+    pub fn df(&self) -> SharedDataframe {
+        self.data.get().df.clone()
+    }
+
+    pub fn index(&self) -> &Index {
+        &self.data.get().index
+    }
+}
+
+impl State {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::Plot(message) => self.update_chart(message),
@@ -199,9 +217,17 @@ impl State {
                 self.chart
                     .axis_mut(&axis::X_AXIS_ID)
                     .zoom(zoom_factor, Some(position.x));
-                self.chart
-                    .axis_mut(&axis::Y_AXIS_IDS[0])
-                    .zoom(zoom_factor, Some(position.y));
+
+                let y_axes = &self.data.get().index.y;
+                #[cfg(feature = "tracing")]
+                if y_axes.is_empty() {
+                    tracing::debug!("no y axes")
+                }
+                for idx in y_axes {
+                    self.chart
+                        .axis_mut(&axis::Y_AXIS_IDS[idx.id() as usize])
+                        .zoom(zoom_factor, Some(position.y));
+                }
 
                 Action::None
             }
@@ -625,6 +651,8 @@ mod data {
 }
 
 pub mod axis {
+    use crate::dataset::plot::{datacube, heatmap};
+
     pub use super::super::axis::{AxisScale, IndexValues};
     use super::super::{chart, utils};
     use super::trace;
@@ -677,6 +705,10 @@ pub mod axis {
                 }
             }
         }
+
+        pub fn values(&self) -> &IndexValues {
+            &self.values
+        }
     }
 
     impl From<ValueAxis> for IndexAxis {
@@ -694,6 +726,18 @@ pub mod axis {
                 scale,
                 values: IndexValues::Series(col),
             }
+        }
+    }
+
+    impl Into<heatmap::axis::Axis> for IndexAxis {
+        fn into(self) -> heatmap::axis::Axis {
+            heatmap::axis::Axis::new_with_scale(self.values, self.scale)
+        }
+    }
+
+    impl Into<datacube::axis::Axis> for IndexAxis {
+        fn into(self) -> datacube::axis::Axis {
+            datacube::axis::Axis::new_with_scale(self.values, self.scale)
         }
     }
 
@@ -789,6 +833,38 @@ pub mod axis {
                 position: aksel::axis::Position::Left,
                 traces,
             })
+        }
+    }
+
+    impl Into<heatmap::axis::Axis> for ValueAxis {
+        fn into(self) -> heatmap::axis::Axis {
+            let ValueAxis { scale, traces, .. } = self;
+            let values = if traces.is_empty() {
+                heatmap::axis::IndexValues::Index
+            } else {
+                heatmap::axis::IndexValues::Series(traces[0].column().clone())
+            };
+
+            heatmap::axis::Axis::new_with_scale(values, scale)
+        }
+    }
+
+    impl Into<datacube::axis::Axis> for ValueAxis {
+        fn into(self) -> datacube::axis::Axis {
+            let ValueAxis {
+                id,
+                scale,
+                position,
+                traces,
+            } = self;
+
+            let values = if traces.is_empty() {
+                IndexValues::Index
+            } else {
+                IndexValues::Series(traces[0].column().clone())
+            };
+
+            datacube::axis::Axis::new_with_scale(values, scale)
         }
     }
 

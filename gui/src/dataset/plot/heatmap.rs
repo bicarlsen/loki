@@ -48,7 +48,7 @@ impl Points {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     index: Index,
     show_centers: bool,
@@ -100,7 +100,7 @@ pub enum Action {
     DataHovered(Option<usize>),
 }
 
-pub(super) struct State {
+pub struct State {
     chart: aksel::State<&'static str, ValueType>,
     data: aksel::Cached<data::State>,
     df: SharedDataframe,
@@ -124,7 +124,7 @@ impl State {
     }
 
     #[inline]
-    fn chart(df: &pl::DataFrame, index: &Index) -> aksel::State<&'static str, f64> {
+    fn chart(df: &pl::DataFrame, index: &Index) -> aksel::State<&'static str, ValueType> {
         let mut chart = aksel::State::new();
         chart.set_axis(
             axis::X_AXIS_ID,
@@ -156,7 +156,7 @@ impl State {
 
     fn colorbar(&self) -> iced::Element<'_, Message> {
         let data = self.data.get();
-        let df = self.df.read().expect("dataframe shoudl exist");
+        let df = self.df.read().expect("dataframe should exist");
         let (zmin, zmax) = match &data.index.z.values {
             axis::IndexValues::Index => ("0".to_string(), df.height().to_string()),
             axis::IndexValues::Series(name) => {
@@ -191,6 +191,10 @@ impl State {
         iced::widget::column![zmax, iced::widget::center_x(colorbar), zmin]
             .width(iced::Shrink)
             .into()
+    }
+
+    pub fn df(&self) -> SharedDataframe {
+        self.df.clone()
     }
 }
 
@@ -743,6 +747,10 @@ pub mod axis {
                 scale: AxisScale::Linear,
                 values,
             }
+        }
+
+        pub fn new_with_scale(values: IndexValues, scale: AxisScale) -> Self {
+            Self { scale, values }
         }
 
         pub fn to_aksel(

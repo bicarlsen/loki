@@ -272,7 +272,7 @@ impl App {
                 let mut data_server = data_server
                     .lock()
                     .expect("could not lock data server start message");
-                let data_server = data_server.take().expect("data server shoudl exist");
+                let data_server = data_server.take().expect("data server should exist");
                 let _ = self.data_server.insert(data_server);
                 iced::Task::none()
             }

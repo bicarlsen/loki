@@ -13,12 +13,12 @@ pub enum Action {
 #[cfg_attr(feature = "project", derive(serde::Serialize, serde::Deserialize))]
 pub struct Settings {
     /// Plot mode.
-    mode: super::plot::mode::Kind,
+    mode: plot::mode::Kind,
 }
 
 impl Settings {
-    pub fn new() -> Self {
-        Default::default()
+    pub fn new(mode: plot::mode::Kind) -> Self {
+        Self { mode }
     }
 
     pub fn update(&mut self, message: Message) -> Action {
@@ -41,8 +41,9 @@ impl Settings {
     fn view_mode(&self) -> iced::Element<'_, Message> {
         let pl_mode = iced::widget::pick_list(
             [
-                super::plot::mode::Kind::Scatter,
-                super::plot::mode::Kind::Heatmap,
+                plot::mode::Kind::Scatter,
+                plot::mode::Kind::Heatmap,
+                plot::mode::Kind::Datacube,
             ],
             Some(self.mode),
             Message::SetMode,
