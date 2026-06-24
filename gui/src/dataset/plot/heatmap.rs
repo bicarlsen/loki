@@ -61,6 +61,10 @@ impl Options {
             show_centers: Default::default(),
         }
     }
+
+    pub fn index(&self) -> &Index {
+        &self.index
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -74,6 +78,18 @@ pub struct Index {
 impl Index {
     pub fn new(x: axis::Axis, y: axis::Axis, z: axis::Axis) -> Self {
         Self { x, y, z }
+    }
+
+    pub fn x(&self) -> &axis::Axis {
+        &self.x
+    }
+
+    pub fn y(&self) -> &axis::Axis {
+        &self.y
+    }
+
+    pub fn z(&self) -> &axis::Axis {
+        &self.z
     }
 }
 
@@ -195,6 +211,14 @@ impl State {
 
     pub fn df(&self) -> SharedDataframe {
         self.df.clone()
+    }
+
+    pub fn data(&self) -> &data::State {
+        self.data.get()
+    }
+
+    pub fn options(&self) -> &Options {
+        &self.options
     }
 }
 
@@ -386,6 +410,10 @@ mod data {
         pub fn points(&self) -> &super::Points {
             &self.points
         }
+
+        pub fn index(&self) -> &super::Index {
+            &self.index
+        }
     }
 
     impl State {
@@ -415,8 +443,8 @@ mod data {
                 .read()
                 .expect("dataframe should be readable")
                 .schema()
-                .iter()
-                .map(|(name, _)| name.to_string())
+                .iter_names()
+                .map(|name| name.to_string())
                 .collect::<Vec<_>>();
             let columns = std::iter::once("".to_string())
                 .chain(columns)
@@ -751,6 +779,14 @@ pub mod axis {
 
         pub fn new_with_scale(values: IndexValues, scale: AxisScale) -> Self {
             Self { scale, values }
+        }
+
+        pub fn scale(&self) -> AxisScale {
+            self.scale
+        }
+
+        pub fn values(&self) -> &IndexValues {
+            &self.values
         }
 
         pub fn to_aksel(

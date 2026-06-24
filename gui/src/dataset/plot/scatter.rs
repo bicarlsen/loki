@@ -678,6 +678,18 @@ pub mod axis {
             }
         }
 
+        pub fn new_with_scale(values: IndexValues, scale: AxisScale) -> Self {
+            Self { scale, values }
+        }
+
+        pub fn scale(&self) -> AxisScale {
+            self.scale
+        }
+
+        pub fn values(&self) -> &IndexValues {
+            &self.values
+        }
+
         pub fn to_aksel(
             &self,
             df: &pl::DataFrame,
@@ -704,10 +716,6 @@ pub mod axis {
                     }
                 }
             }
-        }
-
-        pub fn values(&self) -> &IndexValues {
-            &self.values
         }
     }
 
@@ -754,6 +762,15 @@ pub mod axis {
             Self {
                 id,
                 scale: Default::default(),
+                position: aksel::axis::Position::Left,
+                traces: trace::TraceGroup::default(),
+            }
+        }
+
+        pub fn new_with_scale(id: ValueAxisId, scale: AxisScale) -> Self {
+            Self {
+                id,
+                scale,
                 position: aksel::axis::Position::Left,
                 traces: trace::TraceGroup::default(),
             }
@@ -896,7 +913,7 @@ pub mod axis {
     }
 }
 
-mod trace {
+pub mod trace {
     use super::super::utils;
     use crate::icon;
     use polars::prelude as pl;
@@ -1098,8 +1115,8 @@ mod trace {
             &self.color
         }
 
-        pub fn set_color(&mut self, color: Color) {
-            self.color = color;
+        pub fn set_color(&mut self, color: impl Into<Color>) {
+            self.color = color.into();
         }
 
         /// Set the alpha (opacity) channel value.

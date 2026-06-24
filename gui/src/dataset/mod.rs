@@ -292,16 +292,29 @@ impl Dataset {
                     (plot::mode::Mode::Scatter(state), plot::mode::Kind::Heatmap) => {
                         let idx = state.index();
                         let y_axis = idx.y();
-                        let y = if y_axis.is_empty() {
+                        let (y, z) = if y_axis.is_empty() {
                             Default::default()
                         } else {
-                            y_axis[0].clone().into()
+                            let y = y_axis[0].clone();
+                            let z = if y.traces().is_empty() {
+                                Default::default()
+                            } else {
+                                match y.traces()[0].color() {
+                                    scatter::trace::Color::Default
+                                    | scatter::trace::Color::Custom(_) => Default::default(),
+                                    scatter::trace::Color::Column(col) => heatmap::axis::Axis::new(
+                                        heatmap::axis::IndexValues::Series(col.clone()),
+                                    ),
+                                }
+                            };
+
+                            (y.into(), z)
                         };
 
                         let options = heatmap::Options::new(heatmap::Index::new(
                             idx.x().clone().into(),
                             y,
-                            Default::default(),
+                            z,
                         ));
                         Some(plot::mode::Options::Heatmap(options))
                     }
@@ -311,9 +324,53 @@ impl Dataset {
                         )))
                     }
 
-                    (plot::mode::Mode::Heatmap(state), plot::mode::Kind::Scatter) => Some(
-                        plot::mode::Options::Scatter(scatter::Options::new(Default::default())),
-                    ),
+                    (plot::mode::Mode::Heatmap(state), plot::mode::Kind::Scatter) => {
+                        let idx = state.data().index();
+                        let x = scatter::axis::IndexAxis::new_with_scale(
+                            idx.x().values().clone(),
+                            idx.x().scale(),
+                        );
+
+                        let mut y = scatter::axis::ValueAxis::new_with_scale(0, idx.y().scale());
+                        let tid = match idx.y().values() {
+                            plot::axis::IndexValues::Series(col) => y.add_trace(col.clone()),
+                            plot::axis::IndexValues::Index => {
+                                let idx = state.options().index();
+                                match idx.y().values() {
+                                    plot::axis::IndexValues::Series(col) => {
+                                        y.add_trace(col.clone())
+                                    }
+                                    plot::axis::IndexValues::Index => {
+                                        let col = self
+                                            .df
+                                            .read()
+                                            .expect("could not read dataframe")
+                                            .schema()
+                                            .iter_names()
+                                            .take(1)
+                                            .collect::<Vec<_>>()[0]
+                                            .to_string();
+                                        y.add_trace(col)
+                                    }
+                                }
+                            }
+                        };
+
+                        let trace_color = match idx.z().values() {
+                            plot::axis::IndexValues::Index => scatter::trace::Color::default(),
+                            plot::axis::IndexValues::Series(col) => {
+                                scatter::trace::Color::Column(col.clone())
+                            }
+                        };
+                        y.traces_mut()
+                            .get_trace_mut(tid)
+                            .expect("axis should exist")
+                            .set_color(trace_color);
+
+                        let idx = scatter::Index::new(x, vec![y]);
+                        let options = scatter::Options::new(idx);
+                        Some(plot::mode::Options::Scatter(options))
+                    }
                     (plot::mode::Mode::Heatmap(state), plot::mode::Kind::Datacube) => {
                         Some(plot::mode::Options::Datacube(datacube::Options::new(
                             datacube::Index::D2 {
